@@ -2033,6 +2033,19 @@ async def improve_prompt(request: Request, current_user: User = Depends(get_curr
         input_text = data.get("prompt", "")
         improvement_style = data.get("style", "balanced") # Options: concise, detailed, technical, creative, balanced
         domain = data.get("domain", "") # Optional domain context
+        strength = data.get("strength", 0.5) # New: Control how aggressive improvements should be (0.1-0.9)
+        
+        # Validate and clamp the strength value
+        try:
+            strength = float(strength)
+            strength = max(0.1, min(0.9, strength))
+        except (ValueError, TypeError):
+            strength = 0.5
+        
+        # Temperature mapping based on improvement strength
+        # Lower strength = higher temperature (more conservative/subtle changes)
+        # Higher strength = lower temperature (more aggressive changes)
+        temperature = 0.8 - (strength * 0.5)  # Maps 0.1 -> 0.75, 0.5 -> 0.55, 0.9 -> 0.35
         
         # Get user's previous prompts and usage history
         user_history = []
@@ -2066,6 +2079,12 @@ async def improve_prompt(request: Request, current_user: User = Depends(get_curr
         else:  # balanced
             system_content += " Make it clearer, more specific, and more effective without changing the original intent."
         
+        # Adjust improvement aggressiveness based on strength parameter
+        if strength <= 0.3:
+            system_content += " Make very subtle improvements, preserving most of the original text and word choices."
+        elif strength >= 0.7:
+            system_content += " Be bold with your improvements, completely rewriting if needed while preserving the core intent."
+        
         # Add domain context if provided
         if domain:
             system_content += f" Optimize specifically for {domain} context and terminology."
@@ -2096,7 +2115,7 @@ async def improve_prompt(request: Request, current_user: User = Depends(get_curr
             model="gpt-4o-mini", # Using a smaller model for faster response
             messages=messages,
             max_tokens=800,
-            temperature=0.7,
+            temperature=temperature,  # Use temperature based on strength parameter
             response_format={"type": "json_object"}
         )
         
@@ -2138,6 +2157,85 @@ async def improve_prompt(request: Request, current_user: User = Depends(get_curr
         logger.error(f"Error improving prompt: {str(e)}")
         return {"improved_prompt": input_text, "alternatives": [], "error": str(e)}
 # --- End AI Powered Prompt Improvement Endpoint ---
+
+# --- Improvement Feedback Endpoint ---
+@app.post("/api/feedback/improvement")
+async def feedback_improvement(request: Request, current_user: User = Depends(get_current_user)):
+    """Collect user feedback on prompt improvements to improve the system"""
+    try:
+        data = await request.json()
+        
+        # Extract feedback data
+        improvement_id = data.get("improvementId", "")
+        original_prompt = data.get("originalPrompt", "")
+        improved_prompt = data.get("improvedPrompt", "")
+        is_positive = data.get("isPositive", False)
+        style = data.get("style", "")
+        domain = data.get("domain", "")
+        strength = data.get("strength", 0.5)
+        
+        # Validate required fields
+        if not improvement_id or not original_prompt or not improved_prompt:
+            return {"success": False, "error": "Missing required fields"}
+        
+        # Store feedback in database for future training
+        try:
+            # Import here to avoid circular imports
+            try:
+                from models import ImprovementFeedback
+                
+                await ImprovementFeedback.create(
+                    user_id=current_user.id,
+                    improvement_id=improvement_id,
+                    original_prompt=original_prompt,
+                    improved_prompt=improved_prompt,
+                    is_positive=is_positive,
+                    style=style,
+                    domain=domain,
+                    strength=strength
+                )
+                
+                # Optionally: Send data to OpenAI for model fine-tuning dataset
+                # This would collect examples of good/bad improvements
+                # implementation depends on your OpenAI setup
+                
+                return {"success": True}
+            except ImportError:
+                logger.warning("ImprovementFeedback model not found, falling back to file storage")
+                raise Exception("ImprovementFeedback model not found")
+                
+        except Exception as e:
+            # If we can't store in database, log the feedback for later analysis
+            logger.warning(f"Could not store improvement feedback in database: {str(e)}")
+            
+            # Save to a local feedback JSON file as a fallback
+            try:
+                feedback_file = "improvement_feedback.jsonl"
+                feedback_entry = {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "user_id": str(current_user.id),
+                    "improvement_id": improvement_id,
+                    "original_prompt": original_prompt,
+                    "improved_prompt": improved_prompt,
+                    "is_positive": is_positive,
+                    "style": style,
+                    "domain": domain,
+                    "strength": strength
+                }
+                
+                with open(feedback_file, "a") as f:
+                    f.write(json.dumps(feedback_entry) + "\n")
+                    
+                return {"success": True}
+                
+            except Exception as file_error:
+                logger.error(f"Failed to save feedback to file: {str(file_error)}")
+                return {"success": False, "error": "Could not store feedback"}
+    
+    except Exception as e:
+        logger.error(f"Error processing improvement feedback: {str(e)}")
+        return {"success": False, "error": str(e)}
+# --- End Improvement Feedback Endpoint ---
 
 # --- AI Generated Purpose Categories Endpoint ---
 @app.post("/api/purpose-categories")

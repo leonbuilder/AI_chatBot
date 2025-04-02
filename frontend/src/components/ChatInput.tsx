@@ -23,7 +23,10 @@ import {
   Badge,
   Divider,
   Switch,
-  FormControlLabel
+  FormControlLabel,
+  Slider,
+  Snackbar,
+  Alert
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import SendIcon from '@mui/icons-material/Send';
@@ -44,6 +47,10 @@ import BiotechIcon from '@mui/icons-material/Biotech';
 import ComputerIcon from '@mui/icons-material/Computer';
 import LightbulbIcon from '@mui/icons-material/Lightbulb';
 import MagicIcon from '@mui/icons-material/AutoAwesome';
+import ThumbUpIcon from '@mui/icons-material/ThumbUp';
+import ThumbDownIcon from '@mui/icons-material/ThumbDown';
+import TuneIcon from '@mui/icons-material/Tune';
+import CloseIcon from '@mui/icons-material/Close';
 import axios from 'axios';
 import { API_BASE_URL } from '../constants';
 
@@ -97,6 +104,7 @@ const IMPROVEMENT_STYLES = [
 interface PromptImprovement {
   improved_prompt: string;
   alternatives: string[];
+  id?: string; // To track which improvement received feedback
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({ 
@@ -129,6 +137,15 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const [domainAnchorEl, setDomainAnchorEl] = useState<null | HTMLElement>(null);
   const [styleAnchorEl, setStyleAnchorEl] = useState<null | HTMLElement>(null);
   
+  // Improvement strength slider
+  const [improvementStrength, setImprovementStrength] = useState(0.5);
+  const [showStrengthSlider, setShowStrengthSlider] = useState(false);
+  
+  // Feedback mechanism
+  const [feedbackSent, setFeedbackSent] = useState(false);
+  const [feedbackSnackbarOpen, setFeedbackSnackbarOpen] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  
   // Load user preferences from localStorage
   useEffect(() => {
     const savedAutoImprove = localStorage.getItem('autoImprovePrompts');
@@ -144,6 +161,11 @@ const ChatInput: React.FC<ChatInputProps> = ({
     const savedDomain = localStorage.getItem('promptImprovementDomain');
     if (savedDomain) {
       setDomainContext(savedDomain);
+    }
+    
+    const savedStrength = localStorage.getItem('improvementStrength');
+    if (savedStrength) {
+      setImprovementStrength(parseFloat(savedStrength));
     }
   }, []);
 
@@ -206,11 +228,18 @@ const ChatInput: React.FC<ChatInputProps> = ({
         const response = await apiClient.post('/api/improve-prompt', { 
           prompt: promptText,
           style: improvementStyle,
-          domain: domainContext
+          domain: domainContext,
+          strength: improvementStrength // Send the strength parameter
         });
         
         if (response.data.improved_prompt && response.data.improved_prompt !== promptText) {
-          setPromptImprovement(response.data);
+          // Generate a random ID to track this improvement for feedback
+          const improvementId = Math.random().toString(36).substring(2, 15);
+          setPromptImprovement({
+            ...response.data,
+            id: improvementId
+          });
+          
           setShowImprovementPanel(true);
           
           // If auto-improve is enabled, apply the improvement immediately
@@ -252,7 +281,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
         clearTimeout(improvementDebounceTimeout.current);
       }
     };
-  }, [input, enablePromptImprovement, autoImprove, improvementStyle, domainContext, showImprovementPanel]);
+  }, [input, enablePromptImprovement, autoImprove, improvementStyle, domainContext, showImprovementPanel, improvementStrength]);
 
   // Auto-resize the input field based on content
   useEffect(() => {
@@ -388,6 +417,56 @@ const ChatInput: React.FC<ChatInputProps> = ({
     return style ? style.label : 'Balanced';
   };
 
+  // Handle the strength slider change
+  const handleStrengthChange = (event: Event, newValue: number | number[]) => {
+    const strength = newValue as number;
+    setImprovementStrength(strength);
+    localStorage.setItem('improvementStrength', strength.toString());
+  };
+  
+  // Toggle the strength slider visibility
+  const handleToggleStrengthSlider = () => {
+    setShowStrengthSlider(!showStrengthSlider);
+  };
+  
+  // Send feedback about the prompt improvement
+  const handleSendFeedback = async (isPositive: boolean) => {
+    if (!promptImprovement || !promptImprovement.id || feedbackSent) return;
+    
+    try {
+      await apiClient.post('/api/feedback/improvement', {
+        improvementId: promptImprovement.id,
+        originalPrompt: input,
+        improvedPrompt: promptImprovement.improved_prompt,
+        isPositive: isPositive,
+        style: improvementStyle,
+        domain: domainContext,
+        strength: improvementStrength
+      });
+      
+      setFeedbackSent(true);
+      setFeedbackMessage(isPositive ? 
+        "Thanks for the positive feedback! We'll use it to improve suggestions." : 
+        "Thanks for the feedback. We'll work to make improvements better.");
+      setFeedbackSnackbarOpen(true);
+      
+    } catch (error) {
+      console.error('Error sending feedback:', error);
+    }
+  };
+  
+  // Close the feedback snackbar
+  const handleCloseFeedbackSnackbar = () => {
+    setFeedbackSnackbarOpen(false);
+  };
+
+  // Render the improvement strength label
+  const getStrengthLabel = () => {
+    if (improvementStrength <= 0.3) return "Subtle";
+    if (improvementStrength <= 0.6) return "Balanced";
+    return "Aggressive";
+  };
+
   return (
     <Box 
       sx={{ 
@@ -438,7 +517,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
         </Paper>
       )}
       
-      {/* Prompt improvement panel */}
+      {/* Prompt improvement panel with new features */}
       <Collapse in={showImprovementPanel}>
         <Paper
           elevation={4}
@@ -460,6 +539,16 @@ const ChatInput: React.FC<ChatInputProps> = ({
               </Box>
               
               <Box sx={{ display: 'flex', gap: 1 }}>
+                <Tooltip title="Adjustment strength">
+                  <IconButton 
+                    size="small" 
+                    onClick={handleToggleStrengthSlider}
+                    color="primary"
+                  >
+                    <TuneIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                
                 <Tooltip title="Improvement settings">
                   <IconButton 
                     size="small" 
@@ -502,6 +591,38 @@ const ChatInput: React.FC<ChatInputProps> = ({
               </Box>
             </Box>
             
+            {/* Improvement Strength Slider */}
+            <Collapse in={showStrengthSlider}>
+              <Box sx={{ px: 2, pt: 1, pb: 0.5 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
+                    Adjustment Strength:
+                  </Typography>
+                  <Chip 
+                    label={getStrengthLabel()} 
+                    size="small" 
+                    color="primary" 
+                    variant="outlined"
+                    sx={{ height: 20, '& .MuiChip-label': { px: 1, py: 0 } }}
+                  />
+                </Box>
+                <Slider
+                  value={improvementStrength}
+                  onChange={handleStrengthChange}
+                  aria-label="Improvement strength"
+                  min={0.1}
+                  max={0.9}
+                  step={0.1}
+                  sx={{ mx: 0.5 }}
+                  marks={[
+                    { value: 0.1, label: 'Subtle' },
+                    { value: 0.5, label: 'Balanced' },
+                    { value: 0.9, label: 'Aggressive' },
+                  ]}
+                />
+              </Box>
+            </Collapse>
+            
             {promptImprovement && (
               <>
                 <Paper
@@ -516,6 +637,33 @@ const ChatInput: React.FC<ChatInputProps> = ({
                     {promptImprovement.improved_prompt}
                   </Typography>
                 </Paper>
+                
+                {/* Feedback buttons */}
+                {!feedbackSent && (
+                  <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ mr: 1, alignSelf: 'center' }}>
+                      Was this helpful?
+                    </Typography>
+                    <Tooltip title="This improvement was helpful">
+                      <IconButton 
+                        size="small"
+                        onClick={() => handleSendFeedback(true)}
+                        sx={{ color: theme.palette.success.main }}
+                      >
+                        <ThumbUpIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="This improvement wasn't helpful">
+                      <IconButton 
+                        size="small"
+                        onClick={() => handleSendFeedback(false)}
+                        sx={{ color: theme.palette.error.main }}
+                      >
+                        <ThumbDownIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                )}
                 
                 <Collapse in={showAlternatives}>
                   {promptImprovement.alternatives && promptImprovement.alternatives.length > 0 && (
@@ -640,6 +788,23 @@ const ChatInput: React.FC<ChatInputProps> = ({
           </MenuItem>
         ))}
       </Menu>
+      
+      {/* Feedback Snackbar */}
+      <Snackbar
+        open={feedbackSnackbarOpen}
+        autoHideDuration={4000}
+        onClose={handleCloseFeedbackSnackbar}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert 
+          onClose={handleCloseFeedbackSnackbar} 
+          severity="success" 
+          variant="filled"
+          sx={{ width: '100%' }}
+        >
+          {feedbackMessage}
+        </Alert>
+      </Snackbar>
       
       {/* Chat input */}
       <Paper 
