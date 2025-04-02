@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, status, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, status, WebSocket, WebSocketDisconnect, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
@@ -1972,3 +1972,54 @@ async def download_attachment(
         )
 
 # --- End Attachment Download Endpoint ---
+
+# --- AI Powered Suggestions Endpoint ---
+@app.post("/api/suggestions")
+async def get_suggestions(request: Request, current_user: User = Depends(get_current_user)):
+    """Generate AI-powered suggestions based on user input"""
+    try:
+        data = await request.json()
+        input_text = data.get("input", "")
+        
+        if not input_text or len(input_text.strip()) < 2:
+            return {"suggestions": []}
+        
+        # Generate suggestions using OpenAI
+        response = client.chat.completions.create(
+            model="gpt-4o-mini", # Using a smaller model for faster response
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant providing autocomplete suggestions. Generate 3 different, specific, and helpful questions or prompts that the user might want to ask based on what they've started typing. Keep each suggestion under 80 characters. Return only the suggestions without any explanations."},
+                {"role": "user", "content": f"Generate 3 helpful autocomplete suggestions for: '{input_text}'"}
+            ],
+            max_tokens=150,
+            temperature=0.7
+        )
+        
+        # Parse suggestions from response
+        suggestions_text = response.choices[0].message.content
+        
+        # Clean the response and split into individual suggestions
+        suggestions = []
+        if suggestions_text is not None:
+            for line in suggestions_text.split('\n'):
+                # Remove any numbered bullets, quotes, etc.
+                cleaned_line = line.strip()
+                if cleaned_line:
+                    # Remove numbering like "1.", "2.", etc.
+                    if cleaned_line[0].isdigit() and cleaned_line[1:].startswith('. '):
+                        cleaned_line = cleaned_line[3:]
+                    # Remove quotes if present
+                    cleaned_line = cleaned_line.strip('"\'')
+                    if cleaned_line:
+                        suggestions.append(cleaned_line)
+        else:
+            logger.warning("Received None as suggestions_text from OpenAI API")
+        
+        # Limit to 3 suggestions
+        suggestions = suggestions[:3]
+        
+        return {"suggestions": suggestions}
+    except Exception as e:
+        logger.error(f"Error generating suggestions: {str(e)}")
+        return {"suggestions": [], "error": str(e)}
+# --- End AI Powered Suggestions Endpoint ---

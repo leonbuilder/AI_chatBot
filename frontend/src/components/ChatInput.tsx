@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { TextField, IconButton, Box, Paper, useTheme, List, ListItem, ListItemButton, Typography } from '@mui/material';
+import { TextField, IconButton, Box, Paper, useTheme, List, ListItem, ListItemButton, Typography, CircularProgress } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
+import axios from 'axios';
+import { API_BASE_URL } from '../constants';
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -8,29 +10,25 @@ interface ChatInputProps {
   showSuggestions?: boolean; // Whether to show auto-suggestions
 }
 
-// Some basic suggestions based on input
-const getSuggestions = (input: string): string[] => {
-  input = input.toLowerCase().trim();
-  
-  if (!input) return [];
-  
-  // Common questions that might be asked
-  const commonQueries = [
-    "How can I create a custom model?",
-    "What's the difference between GPT and Assistant models?",
-    "How do I upload a file to my assistant?",
-    "Can I integrate my website content?",
-    "How do I change the settings?",
-    "What are the available chat purposes?",
-    "How do I delete a model?",
-    "Can I edit my messages after sending?"
-  ];
-  
-  // Return suggestions that contain the input text
-  return commonQueries
-    .filter(suggestion => suggestion.toLowerCase().includes(input))
-    .slice(0, 3); // Limit to 3 suggestions
-};
+// Create an axios instance with auth header
+const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+});
+
+// Request interceptor to add the auth token header
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
 
 const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions = true }) => {
   const theme = useTheme();
@@ -38,17 +36,54 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
   const [rows, setRows] = useState(1);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [showSuggestionsList, setShowSuggestionsList] = useState(false);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const textFieldRef = useRef<HTMLTextAreaElement>(null);
+  const debounceTimeout = useRef<NodeJS.Timeout | null>(null);
 
-  // Generate suggestions when input changes
+  // Fetch AI-powered suggestions when input changes
   useEffect(() => {
-    if (showSuggestions && input.length > 2) {
-      const newSuggestions = getSuggestions(input);
-      setSuggestions(newSuggestions);
-      setShowSuggestionsList(newSuggestions.length > 0);
-    } else {
-      setShowSuggestionsList(false);
+    const fetchSuggestions = async (inputText: string) => {
+      if (!showSuggestions || inputText.length < 2) {
+        setSuggestions([]);
+        setShowSuggestionsList(false);
+        return;
+      }
+
+      try {
+        setLoadingSuggestions(true);
+        const response = await apiClient.post('/api/suggestions', { input: inputText });
+        const newSuggestions = response.data.suggestions || [];
+        setSuggestions(newSuggestions);
+        setShowSuggestionsList(newSuggestions.length > 0);
+      } catch (error) {
+        console.error('Error fetching suggestions:', error);
+        setSuggestions([]);
+        setShowSuggestionsList(false);
+      } finally {
+        setLoadingSuggestions(false);
+      }
+    };
+
+    // Debounce the suggestion API calls to avoid hammering the backend
+    if (debounceTimeout.current) {
+      clearTimeout(debounceTimeout.current);
     }
+
+    debounceTimeout.current = setTimeout(() => {
+      if (input.trim()) {
+        fetchSuggestions(input);
+      } else {
+        setSuggestions([]);
+        setShowSuggestionsList(false);
+      }
+    }, 500); // 500ms debounce
+
+    // Cleanup function
+    return () => {
+      if (debounceTimeout.current) {
+        clearTimeout(debounceTimeout.current);
+      }
+    };
   }, [input, showSuggestions]);
 
   // Auto-resize the input field based on content
@@ -126,16 +161,22 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
           }}
         >
           <List disablePadding>
-            {suggestions.map((suggestion, index) => (
-              <ListItem key={index} disablePadding>
-                <ListItemButton 
-                  onClick={() => handleSuggestionClick(suggestion)}
-                  sx={{ py: 1 }}
-                >
-                  <Typography variant="body2">{suggestion}</Typography>
-                </ListItemButton>
+            {loadingSuggestions ? (
+              <ListItem sx={{ justifyContent: 'center', py: 2 }}>
+                <CircularProgress size={24} />
               </ListItem>
-            ))}
+            ) : (
+              suggestions.map((suggestion, index) => (
+                <ListItem key={index} disablePadding>
+                  <ListItemButton 
+                    onClick={() => handleSuggestionClick(suggestion)}
+                    sx={{ py: 1 }}
+                  >
+                    <Typography variant="body2">{suggestion}</Typography>
+                  </ListItemButton>
+                </ListItem>
+              ))
+            )}
           </List>
         </Paper>
       )}
