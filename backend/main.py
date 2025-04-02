@@ -1831,6 +1831,10 @@ async def update_chat_message(
             updated_message = cursor.fetchone()
             logger.debug(f"Updated message: {dict(updated_message) if updated_message else None}")
             
+            if not updated_message:
+                logger.error(f"Updated message {message_id} couldn't be retrieved after update")
+                raise HTTPException(status_code=500, detail="Failed to retrieve updated message")
+            
             # Get any attachments for this message
             cursor.execute(
                 """
@@ -1895,6 +1899,9 @@ async def update_chat_message(
                     "attachments": []
                 }
             
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         logger.exception(f"Error updating message: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update message: {str(e)}")

@@ -185,18 +185,29 @@ function App() {
         is_deleted: boolean;
       }
       
+      // Map of existing message IDs to preserve editing state if needed
+      const existingMsgMap = new Map(messages.map(msg => [msg.id, msg]));
+      
       // Transform the debug endpoint data to match the expected Message format
       const fetchedMessages = response.data.messages as DebugMessage[] || [];
       const processedMessages = fetchedMessages
         .filter((msg: DebugMessage) => !msg.is_deleted) // Only include non-deleted messages
-        .map((msg: DebugMessage) => ({
-          id: msg.id,
-          role: msg.role,
-          content: msg.content,
-          timestamp: msg.timestamp ? new Date(msg.timestamp) : undefined,
-          model_used: msg.model_used,
-          edited_at: msg.edited_at ? new Date(msg.edited_at) : undefined
-        }));
+        .map((msg: DebugMessage) => {
+          // Check if this message already exists in our state to preserve properties
+          const existingMsg = existingMsgMap.get(msg.id);
+          
+          return {
+            id: msg.id,
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp ? new Date(msg.timestamp) : undefined,
+            model_used: msg.model_used,
+            edited_at: msg.edited_at ? new Date(msg.edited_at) : undefined,
+            // Preserve isEditing and isRegenerated states from existing message if any
+            isEditing: existingMsg?.isEditing || false,
+            isRegenerated: existingMsg?.isRegenerated || false
+          };
+        });
       
       console.log(`Message roles breakdown: ${processedMessages.filter(msg => msg.role === 'user').length} user messages, ${processedMessages.filter(msg => msg.role === 'assistant').length} assistant messages`);
       
@@ -211,7 +222,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [isLoggedIn, showSnackbar]);
+  }, [isLoggedIn, showSnackbar, messages]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
     if (sessionId === activeSessionId) {
@@ -528,22 +539,27 @@ function App() {
       console.log("Regenerating response based on edited message");
     }
     
-    const streamingAssistantMessageId = `temp-assistant-${Date.now()}-regen`;
-    const assistantMessagePlaceholder: Message = {
-         id: streamingAssistantMessageId,
-         role: 'assistant',
-         content: '', 
-         timestamp: new Date(),
-         isStreaming: true,
-    };
-
-    setMessages((prev) => [...prev.slice(0, messageIndex), assistantMessagePlaceholder]);
+    // Instead of creating a new message, mark the existing message as streaming
+    setMessages(prev => 
+      prev.map((msg, idx) => 
+        idx === messageIndex 
+          ? { ...msg, content: '', isStreaming: true }
+          : msg
+      )
+    );
+    
     setLoading(false); 
 
     const token = getAuthToken();
     if (!token) {
         showSnackbar("Authentication token not found. Please log in.", "error");
-        setMessages((prev) => prev.map((msg) => msg.id === streamingAssistantMessageId ? { ...msg, content: "Authentication Error", isStreaming: false, error: "Token not found" } : msg));
+        setMessages(prev => 
+          prev.map((msg, idx) => 
+            idx === messageIndex 
+              ? { ...msg, content: "Authentication Error", isStreaming: false, error: "Token not found" }
+              : msg
+          )
+        );
         return;
     }
 
@@ -565,45 +581,71 @@ function App() {
         try {
             const parsedData = JSON.parse(event.data);
             if (parsedData.chunk) {
-                setMessages((prev) => prev.map((msg) => msg.id === streamingAssistantMessageId ? { ...msg, content: msg.content + parsedData.chunk } : msg));
+                setMessages(prev => 
+                  prev.map((msg, idx) => 
+                    idx === messageIndex 
+                      ? { ...msg, content: msg.content + parsedData.chunk }
+                      : msg
+                  )
+                );
             } else if (parsedData.error) {
                 console.error("Error from regeneration stream:", parsedData.error);
-                setMessages((prev) => prev.map((msg) => msg.id === streamingAssistantMessageId ? { ...msg, content: `Error: ${parsedData.error}`, isStreaming: false, error: parsedData.error } : msg));
+                setMessages(prev => 
+                  prev.map((msg, idx) => 
+                    idx === messageIndex 
+                      ? { ...msg, content: `Error: ${parsedData.error}`, isStreaming: false, error: parsedData.error }
+                      : msg
+                  )
+                );
                 es.close(); setCurrentEventSource(null); errorOccurred = true;
             } else if (parsedData.done) {
                 // When done, mark the regenerated message with edited_at for visual indicator
                 const now = new Date();
-                setMessages((prev) => prev.map((msg) => 
-                    msg.id === streamingAssistantMessageId 
-                        ? { 
-                            ...msg, 
-                            isStreaming: false, 
-                            edited_at: isAfterEdit ? now : undefined,
-                            isRegenerated: isAfterEdit
-                          } 
-                        : msg
-                ));
+                setMessages(prev => 
+                  prev.map((msg, idx) => 
+                    idx === messageIndex 
+                      ? { 
+                          ...msg, 
+                          isStreaming: false, 
+                          edited_at: isAfterEdit ? now : undefined,
+                          isRegenerated: isAfterEdit
+                        } 
+                      : msg
+                  )
+                );
                 es.close(); setCurrentEventSource(null);
-                if (!errorOccurred) {
-                    // Refresh to get the server-generated message ID
-                    fetchMessagesForSession(activeSessionId);
-                    fetchSessions();
+                
+                // Don't fetch messages after regeneration as it brings back old messages
+                if (!errorOccurred && !isAfterEdit) {
+                    fetchSessions(); // Just update the sessions list for timestamp
                 }
             }
         } catch (err) {
             console.error("Failed to parse SSE message during regeneration:", err, "Data:", event.data);
-            setMessages((prev) => prev.map((msg) => msg.id === streamingAssistantMessageId ? { ...msg, content: "Error receiving stream data.", isStreaming: false, error: "Stream parsing failed" } : msg));
+            setMessages(prev => 
+              prev.map((msg, idx) => 
+                idx === messageIndex 
+                  ? { ...msg, content: "Error receiving stream data.", isStreaming: false, error: "Stream parsing failed" }
+                  : msg
+              )
+            );
             es.close(); setCurrentEventSource(null); errorOccurred = true;
         }
     };
 
     es.onerror = (err) => {
        console.error("EventSource failed during regeneration:", err);
-       setMessages((prev) => prev.map((msg) => msg.id === streamingAssistantMessageId ? { ...msg, content: "Connection error during regeneration.", isStreaming: false, error: "Connection failed" } : msg));
+       setMessages(prev => 
+         prev.map((msg, idx) => 
+           idx === messageIndex 
+             ? { ...msg, content: "Connection error during regeneration.", isStreaming: false, error: "Connection failed" }
+             : msg
+         )
+       );
        es.close(); setCurrentEventSource(null); errorOccurred = true;
     };
 
-  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar, fetchMessagesForSession]);
+  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar]);
   
   // Function to copy message content to clipboard
   const handleCopyMessageContent = useCallback((content: string) => {
@@ -650,6 +692,19 @@ function App() {
       return;
     }
 
+    // Find the message index and the next assistant message if any
+    const messageIndex = messages.findIndex(msg => msg.id === messageId);
+    let assistantMsgToRegenerate: Message | null = null;
+    let assistantMsgIndex = -1;
+    
+    if (messageIndex >= 0 && messageIndex < messages.length - 1) {
+      const nextMsg = messages[messageIndex + 1];
+      if (nextMsg.role === 'assistant') {
+        assistantMsgToRegenerate = nextMsg;
+        assistantMsgIndex = messageIndex + 1;
+      }
+    }
+
     // Update optimistically first
     setMessages(prevMessages => 
       prevMessages.map(msg => 
@@ -671,17 +726,22 @@ function App() {
       console.log('Message update response:', response.data);
       showSnackbar('Message updated successfully', 'success');
       
-      // Find the next assistant message after this one to regenerate it
-      const messageIndex = messages.findIndex(msg => msg.id === messageId);
-      if (messageIndex >= 0 && messageIndex < messages.length - 1) {
-        const nextMessage = messages[messageIndex + 1];
-        if (nextMessage.role === 'assistant') {
-          // Small delay to let the UI update first
-          setTimeout(() => {
-            console.log(`Auto-regenerating AI response after user edit`);
-            handleRegenerate(nextMessage.id, true);
-          }, 300);
-        }
+      // If there's an assistant message after this one, regenerate it in place
+      if (assistantMsgToRegenerate && assistantMsgIndex >= 0) {
+        console.log(`Auto-regenerating AI response at index ${assistantMsgIndex} after user edit`);
+        // Mark the AI message as streaming for visual feedback
+        setMessages(prevMessages => 
+          prevMessages.map((msg, idx) => 
+            idx === assistantMsgIndex
+              ? { ...msg, content: '', isStreaming: true }
+              : msg
+          )
+        );
+        
+        // Now regenerate the response with a short delay to show the loading state
+        setTimeout(() => {
+          handleRegenerate(assistantMsgToRegenerate!.id, true);
+        }, 100);
       }
     } catch (error) {
       console.error('Error updating message:', error);
