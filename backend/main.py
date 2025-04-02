@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Literal, Union
-import openai
+from openai import OpenAI  # type: ignore
 import os
 from dotenv import load_dotenv
 import logging
@@ -34,12 +34,12 @@ if not api_key:
     logger.error("OpenAI API key not found in environment variables")
     raise ValueError("OpenAI API key not found in environment variables")
 
-# Use simple API key configuration to avoid client initialization issues
-openai.api_key = api_key
-logger.info("OpenAI API key configured successfully using direct API method")
+# Initialize OpenAI client with the latest method
+client = OpenAI(api_key=api_key)  # type: ignore
+logger.info("OpenAI client initialized successfully")
 
 class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "system"]
     content: str
 
 class ChatRequest(BaseModel):
@@ -89,12 +89,13 @@ async def chat(request: ChatRequest):
         
         logger.info("Calling OpenAI API...")
         try:
-            # Use direct API call method with older OpenAI SDK format
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
+            # Use the new client.chat.completions.create method
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=500
+                max_tokens=500,
+                response_format={"type": "text"}
             )
             logger.info("Received response from OpenAI")
             
