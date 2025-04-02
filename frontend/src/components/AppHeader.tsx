@@ -22,8 +22,6 @@ import FileUploadIcon from '@mui/icons-material/FileUpload';
 import { CustomModel } from '../types'; // Import CustomModel type
 
 interface AppHeaderProps {
-  useRealBackend: boolean;
-  onBackendToggle: (checked: boolean) => void;
   tabValue: number;
   onTabChange: (event: React.SyntheticEvent, newValue: number) => void;
   purposes: string[];
@@ -39,8 +37,6 @@ interface AppHeaderProps {
 }
 
 const AppHeader: React.FC<AppHeaderProps> = ({
-  useRealBackend,
-  onBackendToggle,
   tabValue,
   onTabChange,
   purposes,
@@ -60,24 +56,11 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   return (
     <AppBar position="static" color="default" elevation={1}>
       <Toolbar sx={{ flexDirection: 'column', alignItems: 'stretch', pt: 1, pb: 1 }}>
-        {/* Top Row: Title and Backend Toggle */}
+        {/* Top Row: Title */}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
           <Typography variant="h6">
             AI Chatbot
           </Typography>
-          <FormControlLabel
-            control={
-              <Switch
-                checked={useRealBackend}
-                onChange={(e) => onBackendToggle(e.target.checked)}
-                color="primary"
-                size="small"
-              />
-            }
-            labelPlacement="start"
-            label={<Typography variant="caption">{useRealBackend ? 'Real Backend' : 'Mock Backend'}</Typography>}
-            sx={{ mr: 0, ml: 'auto' }} // Adjust margin
-          />
         </Box>
 
         {/* Second Row: Tabs */}

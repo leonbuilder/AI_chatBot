@@ -29,7 +29,6 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import LinkIcon from '@mui/icons-material/Link';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
 import axios from 'axios';
-import { mockApi } from './mockBackend';
 import { Message, CustomModel } from './types';
 import { API_BASE_URL, purposes, modelTypes } from './constants';
 import ChatMessageList from './components/ChatMessageList';
@@ -46,8 +45,6 @@ function App() {
   const [tabValue, setTabValue] = useState(0);
   const [customModels, setCustomModels] = useState<CustomModel[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
-  
-  const [useRealBackend, setUseRealBackend] = useState(false);
   
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [newModelName, setNewModelName] = useState('');
@@ -81,11 +78,9 @@ function App() {
     const checkBackend = async () => {
       try {
         await axios.get(`${API_BASE_URL}/api/health`);
-        setUseRealBackend(false);
-        showSnackbar('Backend server detected! You can toggle between real and mock mode.', 'success');
+        showSnackbar('Backend server detected!', 'success');
       } catch (error) {
-        setUseRealBackend(false);
-        showSnackbar('Using mock backend - real server not available', 'error');
+        showSnackbar('Backend server not available', 'error');
       }
     };
     
@@ -95,21 +90,11 @@ function App() {
   
   const fetchCustomModels = async () => {
     try {
-      let response;
-      if (useRealBackend) {
-        response = await axios.get(`${API_BASE_URL}/api/custom_models`);
-      } else {
-        response = await mockApi.getCustomModels();
-      }
+      const response = await axios.get(`${API_BASE_URL}/api/custom_models`);
       setCustomModels(response.data);
     } catch (error) {
       console.error('Error fetching custom models:', error);
-      if (useRealBackend) {
-        const mockResponse = await mockApi.getCustomModels();
-        setCustomModels(mockResponse.data);
-        showSnackbar('Failed to fetch from backend, using mock data', 'error');
-        setUseRealBackend(false);
-      }
+      showSnackbar('Failed to fetch custom models from backend', 'error');
     }
   };
   
@@ -134,19 +119,11 @@ function App() {
     try {
       let response;
       const messagesToSend = [...messages, userMessage];
-      if (useRealBackend) {
-        response = await axios.post(`${API_BASE_URL}/api/chat`, {
-          messages: messagesToSend,
-          purpose,
-          model_id: selectedModelId,
-        });
-      } else {
-        response = await mockApi.chat({
-          messages: messagesToSend,
-          purpose,
-          model_id: selectedModelId,
-        });
-      }
+      response = await axios.post(`${API_BASE_URL}/api/chat`, {
+        messages: messagesToSend,
+        purpose,
+        model_id: selectedModelId,
+      });
 
       console.log('Server response:', response.data);
       const responseMessage = response.data.message || "No response received";
@@ -169,7 +146,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [messages, purpose, selectedModelId, useRealBackend]);
+  }, [messages, purpose, selectedModelId]);
   
   const handleCreateModel = async () => {
     try {
@@ -181,11 +158,7 @@ function App() {
         instructions: newModelInstructions,
       };
 
-      if (useRealBackend) {
-        response = await axios.post(`${API_BASE_URL}/api/custom_models`, modelPayload);
-      } else {
-        response = await mockApi.createCustomModel(modelPayload);
-      }
+      response = await axios.post(`${API_BASE_URL}/api/custom_models`, modelPayload);
       
       setCustomModels([...customModels, response.data]);
       setModelDialogOpen(false);
@@ -202,13 +175,9 @@ function App() {
   const extractWebsiteContent = async (modelId: string, url: string) => {
     setWebsiteExtracting(true);
     try {
-      if (useRealBackend) {
-        await axios.post(`${API_BASE_URL}/api/custom_models/${modelId}/extract_website_content`, {
-          url: url
-        });
-      } else {
-        await mockApi.extractWebsiteContent();
-      }
+      await axios.post(`${API_BASE_URL}/api/custom_models/${modelId}/extract_website_content`, {
+        url: url
+      });
       showSnackbar('Website content extracted successfully', 'success');
     } catch (error) {
       console.error('Error extracting website content:', error);
@@ -227,19 +196,15 @@ function App() {
     setUploading(true);
     
     try {
-      if (useRealBackend) {
-        await axios.post(
-          `${API_BASE_URL}/api/custom_models/${selectedModelId}/files`,
-          formData,
-          {
-            headers: {
-              'Content-Type': 'multipart/form-data',
-            },
-          }
-        );
-      } else {
-        await mockApi.uploadFile();
-      }
+      await axios.post(
+        `${API_BASE_URL}/api/custom_models/${selectedModelId}/files`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        }
+      );
       
       setFileDialogOpen(false);
       setSelectedFile(null);
@@ -262,11 +227,7 @@ function App() {
   
   const handleDeleteModel = async (modelId: string) => {
     try {
-      if (useRealBackend) {
-        await axios.delete(`${API_BASE_URL}/api/custom_models/${modelId}`);
-      } else {
-        await mockApi.deleteCustomModel(modelId);
-      }
+      await axios.delete(`${API_BASE_URL}/api/custom_models/${modelId}`);
       
       setCustomModels(customModels.filter(model => model.id !== modelId));
       
@@ -304,8 +265,6 @@ function App() {
   return (
     <Container maxWidth="lg" sx={{ height: '100vh', display: 'flex', flexDirection: 'column', p: 0 }}>
       <AppHeader 
-        useRealBackend={useRealBackend}
-        onBackendToggle={(checked: boolean) => setUseRealBackend(checked)}
         tabValue={tabValue}
         onTabChange={(_event: React.SyntheticEvent, newValue: number) => setTabValue(newValue)}
         purposes={purposes}
