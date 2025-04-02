@@ -7,27 +7,10 @@ import {
   Box,
   Typography,
   CircularProgress,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
-  Tabs,
-  Tab,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogActions,
   Snackbar,
   Alert,
-  Switch,
-  FormControlLabel,
   SelectChangeEvent,
 } from '@mui/material';
-import SendIcon from '@mui/icons-material/Send';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteIcon from '@mui/icons-material/Delete';
-import LinkIcon from '@mui/icons-material/Link';
-import FileUploadIcon from '@mui/icons-material/FileUpload';
 import axios from 'axios';
 import { Message, CustomModel } from './types';
 import { API_BASE_URL, purposes, modelTypes } from './constants';
@@ -38,14 +21,69 @@ import CreateModelDialog from './components/dialogs/CreateModelDialog';
 import FileUploadDialog from './components/dialogs/FileUploadDialog';
 import AddWebsiteDialog from './components/dialogs/AddWebsiteDialog';
 
+// --- Axios Instance with Interceptor ---
+const apiClient = axios.create({
+  baseURL: API_BASE_URL, 
+});
+
+// Function to get the token from localStorage
+const getAuthToken = (): string | null => {
+  return localStorage.getItem('authToken');
+};
+
+// Request interceptor to add the auth token header
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = getAuthToken();
+    if (token) {
+      config.headers = config.headers || {}; 
+      config.headers.Authorization = `Bearer ${token}`;
+    } else {
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Response interceptor (optional, added previously)
+apiClient.interceptors.response.use(
+  response => response,
+  error => {
+    if (axios.isAxiosError(error) && error.response?.status === 401) {
+      console.error("Unauthorized request - 401 Error");
+      if (getAuthToken()) {
+          localStorage.removeItem('authToken');
+          window.location.reload(); 
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+// --- End Axios Instance Setup ---
+
 function App() {
+  // Authentication State
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(!!getAuthToken());
+  const [viewMode, setViewMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [loginLoading, setLoginLoading] = useState<boolean>(false);
+  const [loginError, setLoginError] = useState<string>('');
+  const [registerUsername, setRegisterUsername] = useState<string>('');
+  const [registerPassword, setRegisterPassword] = useState<string>('');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
+  const [registerLoading, setRegisterLoading] = useState<boolean>(false);
+  const [registerError, setRegisterError] = useState<string>('');
+
+  // Existing State
   const [messages, setMessages] = useState<Message[]>([]);
   const [purpose, setPurpose] = useState('General Knowledge');
   const [loading, setLoading] = useState(false);
   const [tabValue, setTabValue] = useState(0);
   const [customModels, setCustomModels] = useState<CustomModel[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
-  
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [newModelName, setNewModelName] = useState('');
   const [newModelDesc, setNewModelDesc] = useState('');
@@ -58,18 +96,28 @@ function App() {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info' | 'warning'>('success');
-  
   const [uploading, setUploading] = useState(false);
-  
   const [websiteExtracting, setWebsiteExtracting] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const fetchCustomModels = useCallback(async () => {
+    if (!isLoggedIn) return;
+    try {
+      const response = await apiClient.get(`/api/custom_models`); 
+      setCustomModels(response.data);
+    } catch (error) {
+      console.error('Error fetching custom models:', error);
+      if (!(axios.isAxiosError(error) && error.response?.status === 401)) {
+          showSnackbar('Failed to fetch custom models', 'error');
+      }
+    }
+  }, [isLoggedIn]);
+  
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
@@ -77,26 +125,18 @@ function App() {
   useEffect(() => {
     const checkBackend = async () => {
       try {
-        await axios.get(`${API_BASE_URL}/api/health`);
-        showSnackbar('Backend server detected!', 'success');
       } catch (error) {
         showSnackbar('Backend server not available', 'error');
       }
     };
     
     checkBackend();
-    fetchCustomModels();
-  }, []);
-  
-  const fetchCustomModels = async () => {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/api/custom_models`);
-      setCustomModels(response.data);
-    } catch (error) {
-      console.error('Error fetching custom models:', error);
-      showSnackbar('Failed to fetch custom models from backend', 'error');
+    if (isLoggedIn) {
+        fetchCustomModels();
+    } else {
+        setCustomModels([]);
     }
-  };
+  }, [isLoggedIn, fetchCustomModels]);
   
   const showSnackbar = (message: string, severity: 'success' | 'error' | 'info' | 'warning') => {
     setSnackbarMessage(message);
@@ -105,7 +145,7 @@ function App() {
   };
 
   const handleSend = useCallback(async (messageContent: string) => {
-    if (!messageContent.trim()) return;
+    if (!messageContent.trim() || !isLoggedIn) return;
 
     const userMessage: Message = {
       role: 'user',
@@ -117,10 +157,9 @@ function App() {
     setLoading(true);
 
     try {
-      let response;
       const messagesToSend = [...messages, userMessage];
-      response = await axios.post(`${API_BASE_URL}/api/chat`, {
-        messages: messagesToSend,
+      const response = await apiClient.post(`/api/chat`, { 
+        messages: messagesToSend.map(m => ({ role: m.role, content: m.content })),
         purpose,
         model_id: selectedModelId,
       });
@@ -136,17 +175,108 @@ function App() {
 
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error sending message:', error);
+      const errorContent = axios.isAxiosError(error) && error.response?.status === 401 
+        ? 'Authentication error. Please log in again.'
+        : 'Sorry, I encountered an error. Please try again.';
+        
       const errorMessage: Message = {
         role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again.',
+        content: errorContent,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setLoading(false);
     }
-  }, [messages, purpose, selectedModelId]);
+  }, [messages, purpose, selectedModelId, isLoggedIn]);
+  
+  const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoginLoading(true);
+    setLoginError('');
+
+    try {
+      const params = new URLSearchParams();
+      params.append('username', username);
+      params.append('password', password);
+
+      const response = await apiClient.post('/api/token', params, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+
+      if (response.data.access_token) {
+        localStorage.setItem('authToken', response.data.access_token);
+        setIsLoggedIn(true);
+        setUsername('');
+        setPassword('');
+        setViewMode('login');
+        showSnackbar('Login successful!', 'success');
+      } else {
+        throw new Error('No access token received');
+      }
+    } catch (error) {
+      console.error('Login failed:', error);
+      const errorMsg = axios.isAxiosError(error) && error.response?.data?.detail
+        ? error.response.data.detail 
+        : 'Login failed. Please check username/password.';
+      setLoginError(errorMsg);
+      showSnackbar(errorMsg, 'error');
+      setIsLoggedIn(false);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleRegister = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setRegisterError('');
+
+    if (registerPassword !== confirmPassword) {
+      setRegisterError('Passwords do not match.');
+      return;
+    }
+    if (!registerUsername || !registerPassword) {
+        setRegisterError('Username and password cannot be empty.');
+        return;
+    }
+
+    setRegisterLoading(true);
+    try {
+      const payload = {
+        username: registerUsername,
+        password: registerPassword,
+      };
+      await apiClient.post('/api/users/register', payload);
+      
+      showSnackbar('Registration successful! Please log in.', 'success');
+      setRegisterUsername('');
+      setRegisterPassword('');
+      setConfirmPassword('');
+      setViewMode('login'); 
+      setLoginError(''); 
+
+    } catch (error) {
+      console.error('Registration failed:', error);
+       const errorMsg = axios.isAxiosError(error) && error.response?.data?.detail
+        ? error.response.data.detail 
+        : 'Registration failed. Please try again.';
+      setRegisterError(errorMsg);
+      showSnackbar(errorMsg, 'error'); 
+    } finally {
+      setRegisterLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('authToken');
+    setIsLoggedIn(false);
+    setMessages([]);
+    setCustomModels([]);
+    setSelectedModelId(null);
+    setViewMode('login');
+    showSnackbar('Logged out successfully.', 'info');
+  };
   
   const handleCreateModel = async () => {
     try {
@@ -158,7 +288,7 @@ function App() {
         instructions: newModelInstructions,
       };
 
-      response = await axios.post(`${API_BASE_URL}/api/custom_models`, modelPayload);
+      response = await apiClient.post(`/api/custom_models`, modelPayload); 
       
       setCustomModels([...customModels, response.data]);
       setModelDialogOpen(false);
@@ -175,7 +305,7 @@ function App() {
   const extractWebsiteContent = async (modelId: string, url: string) => {
     setWebsiteExtracting(true);
     try {
-      await axios.post(`${API_BASE_URL}/api/custom_models/${modelId}/extract_website_content`, {
+      await apiClient.post(`/api/custom_models/${modelId}/extract_website_content`, { 
         url: url
       });
       showSnackbar('Website content extracted successfully', 'success');
@@ -196,8 +326,8 @@ function App() {
     setUploading(true);
     
     try {
-      await axios.post(
-        `${API_BASE_URL}/api/custom_models/${selectedModelId}/files`,
+      await apiClient.post( 
+        `/api/custom_models/${selectedModelId}/files`,
         formData,
         {
           headers: {
@@ -227,7 +357,7 @@ function App() {
   
   const handleDeleteModel = async (modelId: string) => {
     try {
-      await axios.delete(`${API_BASE_URL}/api/custom_models/${modelId}`);
+      await apiClient.delete(`/api/custom_models/${modelId}`); 
       
       setCustomModels(customModels.filter(model => model.id !== modelId));
       
@@ -257,14 +387,162 @@ function App() {
       setWebsiteUrl('');
       showSnackbar('Website content extraction initiated.', 'success');
     } catch (error) {
-      // Error is already logged and snackbar shown in extractWebsiteContent
-      // No need to show another snackbar here
     }
   };
+
+  if (!isLoggedIn) {
+    return (
+      <Container component="main" maxWidth="xs">
+        <Box
+          sx={{
+            marginTop: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+          }}
+        >
+          <Typography component="h1" variant="h5">
+            {viewMode === 'login' ? 'Sign in' : 'Register'}
+          </Typography>
+          
+          {viewMode === 'login' ? (
+            <Box component="form" onSubmit={handleLogin} noValidate sx={{ mt: 1 }}>
+              <TextField
+                margin="normal"
+                required
+                fullWidth
+                id="username"
+                label="Username"
+                name="username"
+                autoComplete="username"
+                autoFocus
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={loginLoading}
+              />
+              <TextField
+                margin="normal"
+                required
+                fullWidth
+                name="password"
+                label="Password"
+                type="password"
+                id="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={loginLoading}
+              />
+              {loginError && (
+                <Typography color="error" variant="body2" sx={{ mt: 1 }}>
+                  {loginError}
+                </Typography>
+              )}
+              <Button
+                type="submit"
+                fullWidth
+                variant="contained"
+                sx={{ mt: 3, mb: 2 }}
+                disabled={loginLoading}
+              >
+                {loginLoading ? <CircularProgress size={24} /> : 'Sign In'}
+              </Button>
+              <Button 
+                fullWidth 
+                variant="text"
+                onClick={() => { setViewMode('register'); setLoginError(''); }}
+                sx={{ mb: 2 }}
+              >
+                Don't have an account? Register
+              </Button>
+            </Box>
+          ) : (
+            <Box component="form" onSubmit={handleRegister} noValidate sx={{ mt: 1 }}>
+              <TextField
+                margin="normal"
+                required
+                fullWidth
+                id="register-username"
+                label="Username"
+                name="register-username"
+                autoComplete="username"
+                autoFocus
+                value={registerUsername}
+                onChange={(e) => setRegisterUsername(e.target.value)}
+                disabled={registerLoading}
+              />
+              <TextField
+                margin="normal"
+                required
+                fullWidth
+                name="register-password"
+                label="Password"
+                type="password"
+                id="register-password"
+                autoComplete="new-password"
+                value={registerPassword}
+                onChange={(e) => setRegisterPassword(e.target.value)}
+                disabled={registerLoading}
+              />
+              <TextField
+                margin="normal"
+                required
+                fullWidth
+                name="confirm-password"
+                label="Confirm Password"
+                type="password"
+                id="confirm-password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                error={registerPassword !== confirmPassword && confirmPassword !== ''}
+                helperText={registerPassword !== confirmPassword && confirmPassword !== '' ? "Passwords do not match" : ""}
+                disabled={registerLoading}
+              />
+              {registerError && (
+                <Typography color="error" variant="body2" sx={{ mt: 1 }}>
+                  {registerError}
+                </Typography>
+              )}
+              <Button
+                type="submit"
+                fullWidth
+                variant="contained"
+                sx={{ mt: 3, mb: 2 }}
+                disabled={registerLoading || (registerPassword !== confirmPassword && confirmPassword !== '')}
+              >
+                {registerLoading ? <CircularProgress size={24} /> : 'Register'}
+              </Button>
+              <Button 
+                fullWidth 
+                variant="text"
+                onClick={() => { setViewMode('login'); setRegisterError(''); }}
+                 sx={{ mb: 2 }}
+             >
+                Already have an account? Sign in
+              </Button>
+            </Box>
+          )}
+        </Box>
+         <Snackbar
+            open={snackbarOpen}
+            autoHideDuration={6000}
+            onClose={() => setSnackbarOpen(false)}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+          >
+            <Alert onClose={() => setSnackbarOpen(false)} severity={snackbarSeverity} variant="filled" sx={{ width: '100%' }}>
+              {snackbarMessage}
+            </Alert>
+          </Snackbar>
+      </Container>
+    );
+  }
 
   return (
     <Container maxWidth="lg" sx={{ height: '100vh', display: 'flex', flexDirection: 'column', p: 0 }}>
       <AppHeader 
+        isLoggedIn={isLoggedIn}
+        onLogout={handleLogout}
         tabValue={tabValue}
         onTabChange={(_event: React.SyntheticEvent, newValue: number) => setTabValue(newValue)}
         purposes={purposes}

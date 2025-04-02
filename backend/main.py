@@ -30,7 +30,9 @@ import aiofiles # For async file operations
 CHAT_UPLOAD_DIR = "backend/uploads/chat_files"
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG, # <-- Make sure this is DEBUG
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    handlers=[logging.StreamHandler()]) # Or your file handler
 logger = logging.getLogger(__name__)
 
 # Ensure upload directory exists
@@ -299,28 +301,35 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserInDB:
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    logger.debug(f"get_current_user called. Attempting to validate token received: {token[:10] if token else '[No Token Provided]'}...") # Log token presence/start
+    
     if not SECRET_KEY:
         logger.error("SECRET_KEY is not configured for token validation.")
-        # Use 500 Internal Server Error as this is a configuration issue
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error") 
 
     try:
+        # Add logging here:
+        logger.debug(f"Attempting to decode token: {token[:10]}...") # Log first few chars
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: Optional[str] = payload.get("sub")
+        logger.debug(f"Token decoded successfully. Username (sub): {username}") # Log payload sub
         if username is None:
             logger.warning("Token payload missing 'sub' (username).")
             raise credentials_exception
-        # If username is not None, it's a str. Type checker should understand this.
-        token_data = TokenData(username=username) 
+        token_data = TokenData(username=username)
     except JWTError as e:
-        logger.warning(f"JWTError decoding token: {e}")
+        # Add specific JWTError logging:
+        logger.warning(f"JWTError decoding token: {type(e).__name__} - {e}") 
+        raise credentials_exception
+    except Exception as e: # Catch other potential errors
+        logger.error(f"Unexpected error during token decode: {type(e).__name__} - {e}")
         raise credentials_exception
     
-    # username is confirmed string here
     user = get_user(username=username) 
     if user is None:
         logger.warning(f"User '{username}' not found for token.")
         raise credentials_exception
+    logger.debug(f"User '{username}' found and authenticated successfully.") # Log success
     return user
 
 def get_user(username: str) -> Optional[UserInDB]:
@@ -1368,61 +1377,112 @@ def save_chat_message(
 # WebSocket Connection Manager
 class ConnectionManager:
     def __init__(self):
-        # Store active connections keyed by user_id
-        self.active_connections: Dict[str, WebSocket] = {}
+        # Store active connections: session_id -> {user_id -> websocket}
+        self.session_connections: Dict[str, Dict[str, WebSocket]] = {}
+        # Store which session each user_id is currently in: user_id -> session_id
+        self.user_session_map: Dict[str, str] = {}
 
     async def connect(self, websocket: WebSocket, user_id: str):
+        # Connection happens first, joining a session is a separate step via WS message
         await websocket.accept()
-        self.active_connections[user_id] = websocket
-        logger.info(f"WebSocket connected for user {user_id}")
-        # Optionally broadcast presence here
-        await self.broadcast_presence(user_id, is_online=True)
+        # We don't assign to a session here initially
+        logger.info(f"WebSocket connected for user {user_id} (pending session join)")
+        # Maybe send a message indicating successful connection, awaiting session join?
+        await websocket.send_text(json.dumps({"type": "connected", "detail": "Please join a session."}))
+
+    async def join_session(self, websocket: WebSocket, user_id: str, session_id: str):
+        # Remove user from any previous session they might be in
+        await self.leave_session(user_id)
+        
+        if session_id not in self.session_connections:
+            self.session_connections[session_id] = {}
+        self.session_connections[session_id][user_id] = websocket
+        self.user_session_map[user_id] = session_id
+        logger.info(f"User {user_id} joined session {session_id}")
+        # Broadcast presence within the session
+        await self.broadcast_presence(user_id, session_id, is_online=True)
+
+    async def leave_session(self, user_id: str):
+        if user_id in self.user_session_map:
+            session_id = self.user_session_map[user_id]
+            if session_id in self.session_connections and user_id in self.session_connections[session_id]:
+                del self.session_connections[session_id][user_id]
+                # Clean up session dict if empty
+                if not self.session_connections[session_id]:
+                    del self.session_connections[session_id]
+                logger.info(f"User {user_id} left session {session_id}")
+                # Broadcast offline presence within the session they left
+                await self.broadcast_presence(user_id, session_id, is_online=False)
+            del self.user_session_map[user_id]
 
     def disconnect(self, user_id: str):
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-            logger.info(f"WebSocket disconnected for user {user_id}")
-            # Optionally broadcast presence here
-            # Need to run this in an event loop if called outside async context
-            # asyncio.create_task(self.broadcast_presence(user_id, is_online=False))
-            # For simplicity in disconnect, we might broadcast from endpoint context
-        
-    async def send_personal_message(self, message: str, user_id: str):
-        if user_id in self.active_connections:
-            websocket = self.active_connections[user_id]
-            try:
-                await websocket.send_text(message)
-            except Exception as e:
-                logger.error(f"Error sending personal message to user {user_id}: {e}")
-                # Consider disconnecting if send fails repeatedly
+        # When a user disconnects entirely, ensure they leave their current session
+        # Leave_session handles broadcast within the session
+        # Need to run leave_session in an async context if called synchronously
+        # For simplicity, we call this from the async WebSocket endpoint handler
+        logger.info(f"Initiating disconnect process for user {user_id}")
+        # The actual removal and broadcast happen in leave_session
+        # which should be called from the async disconnect handler.
+        pass # Logic moved to leave_session, called by endpoint handler
 
-    async def broadcast(self, message: str):
-        # Send message to all connected clients
-        disconnected_users = []
-        for user_id, websocket in self.active_connections.items():
-            try:
-                await websocket.send_text(message)
-            except Exception as e:
-                logger.error(f"Error broadcasting to user {user_id}: {e}. Marking for disconnect.")
-                disconnected_users.append(user_id)
-        
-        # Clean up disconnected users after broadcast
-        for user_id in disconnected_users:
-            self.disconnect(user_id)
-            # Need to broadcast offline status after cleanup
-            await self.broadcast_presence(user_id, is_online=False)
+    async def send_personal_message(self, message: str, user_id: str):
+        # Find the user's session and websocket
+        if user_id in self.user_session_map:
+            session_id = self.user_session_map[user_id]
+            if session_id in self.session_connections and user_id in self.session_connections[session_id]:
+                websocket = self.session_connections[session_id][user_id]
+                try:
+                    await websocket.send_text(message)
+                except Exception as e:
+                    logger.error(f"Error sending personal message to user {user_id} in session {session_id}: {e}")
+                    # Consider triggering disconnect flow
+            else:
+                 logger.warning(f"User {user_id} found in map but not in session {session_id} connections during personal send.")
+        else:
+             logger.warning(f"User {user_id} not found in user_session_map during personal send.")
+             
+    async def broadcast_to_session(self, message: str, session_id: str, sender_user_id: Optional[str] = None):
+        """Broadcasts a message to all users in a specific session, optionally excluding the sender."""
+        if session_id in self.session_connections:
+            disconnected_users = []
+            # Create a copy of user IDs to iterate over, in case of disconnections during broadcast
+            user_ids_in_session = list(self.session_connections[session_id].keys())
             
-    # Example for presence
-    async def broadcast_presence(self, user_id: str, is_online: bool):
+            for user_id in user_ids_in_session:
+                if user_id == sender_user_id:
+                    continue # Skip sender
+                    
+                websocket = self.session_connections[session_id].get(user_id)
+                if websocket:
+                    try:
+                        await websocket.send_text(message)
+                    except Exception as e:
+                        logger.error(f"Error broadcasting to user {user_id} in session {session_id}: {e}. Marking for disconnect.")
+                        # Mark user for disconnection *after* the loop
+                        disconnected_users.append(user_id)
+                else:
+                    # Should not happen if user_ids_in_session is from keys(), but good practice
+                    logger.warning(f"WebSocket not found for user {user_id} in session {session_id} during broadcast.")
+                    disconnected_users.append(user_id)
+            
+            # Clean up disconnected users after broadcast
+            for user_id in disconnected_users:
+                 await self.leave_session(user_id) # leave_session handles presence broadcast
+        else:
+            logger.debug(f"Attempted broadcast to non-existent or empty session {session_id}")
+
+    # Presence broadcast now needs session context
+    async def broadcast_presence(self, user_id: str, session_id: str, is_online: bool):
         presence_message = json.dumps({"type": "presence", "user_id": user_id, "online": is_online})
-        await self.broadcast(presence_message)
+        # Broadcast presence only within the relevant session, excluding the user themselves
+        await self.broadcast_to_session(presence_message, session_id, sender_user_id=user_id)
 
 manager = ConnectionManager()
 
 # WebSocket Endpoint
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
-    """WebSocket endpoint requiring token query parameter for authentication."""
+    """WebSocket endpoint requiring token query parameter and session joining."""
     if not token:
         logger.warning("WebSocket connection attempt without token.")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -1436,76 +1496,114 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
         return
         
     user_id = user.id
-    await manager.connect(websocket, user_id)
+    await manager.connect(websocket, user_id) # Connects, sends "connected" message
+    
+    current_session_id: Optional[str] = None
     
     try:
+        # First message must be 'join_session'
+        join_data_raw = await websocket.receive_text()
+        try:
+            join_data = json.loads(join_data_raw)
+            if join_data.get("type") == "join_session" and "session_id" in join_data:
+                session_id_to_join = join_data["session_id"]
+                await manager.join_session(websocket, user_id, session_id_to_join)
+                current_session_id = session_id_to_join
+                # Confirm successful join to client
+                await websocket.send_text(json.dumps({"type": "session_joined", "session_id": current_session_id}))
+            else:
+                logger.warning(f"User {user_id} sent invalid first message: {join_data_raw}")
+                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="First message must be type join_session with session_id")
+                # Need to clean up the initial connection without session
+                # Since connect() doesn't add to map, just logging is needed maybe?
+                # No session to leave here.
+                return # Exit the handler
+        except json.JSONDecodeError:
+            logger.warning(f"User {user_id} sent invalid JSON as first message: {join_data_raw}")
+            await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="Invalid JSON")
+            return
+
+        # Main message loop after joining session
         while True:
             data = await websocket.receive_text()
-            logger.info(f"Received WS message from {user_id} ({user.username}): {data}")
+            # Ensure current_session_id is set, although it should be after successful join
+            if not current_session_id:
+                 logger.error(f"User {user_id} is in message loop but has no current_session_id. This should not happen.")
+                 await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Internal state error")
+                 break # Exit loop
+                 
+            logger.info(f"Received WS message from {user_id} ({user.username}) in session {current_session_id}: {data}")
 
-            # Handle incoming WebSocket messages (typing, read receipts, etc.)
+            # Handle subsequent messages (typing, read receipts, etc.)
             try:
                 message_data = json.loads(data)
                 message_type = message_data.get("type")
 
                 if message_type == "typing":
-                    session_id = message_data.get("session_id")
+                    # Session ID should ideally match current_session_id, but use message's for safety?
+                    # Let's assume typing applies to the session the user is *currently* in.
                     is_typing = message_data.get("is_typing", False)
-                    if session_id:
-                        # TODO: Broadcast typing status only to users in the same session_id
-                        typing_message = json.dumps({
-                            "type": "typing", 
-                            "user_id": user_id, 
-                            "username": user.username, # Send username for display
-                            "session_id": session_id, 
-                            "is_typing": is_typing
-                        })
-                        # Simplistic broadcast for now:
-                        await manager.broadcast(typing_message)
-                    else:
-                        logger.warning(f"Typing indicator received without session_id from {user_id}")
+                    typing_message = json.dumps({
+                        "type": "typing", 
+                        "user_id": user_id, 
+                        "username": user.username, 
+                        "session_id": current_session_id, 
+                        "is_typing": is_typing
+                    })
+                    await manager.broadcast_to_session(typing_message, current_session_id, sender_user_id=user_id)
                 
                 elif message_type == "read_receipt":
-                     session_id = message_data.get("session_id")
                      last_read_message_id = message_data.get("last_read_message_id")
-                     if session_id and last_read_message_id:
-                         # TODO: Store read status in DB (optional)
-                         # TODO: Broadcast read receipt only to relevant users in the session
+                     if last_read_message_id:
                          read_receipt_message = json.dumps({
                             "type": "read_receipt",
                             "user_id": user_id,
                             "username": user.username,
-                            "session_id": session_id,
+                            "session_id": current_session_id,
                             "last_read_message_id": last_read_message_id
                          })
-                         # Simplistic broadcast for now:
-                         await manager.broadcast(read_receipt_message)
+                         await manager.broadcast_to_session(read_receipt_message, current_session_id, sender_user_id=user_id)
                      else:
-                        logger.warning(f"Read receipt received with missing data from {user_id}")
-
+                        logger.warning(f"Read receipt received without last_read_message_id from {user_id}")
+                
+                elif message_type == "leave_session": # Allow explicit leaving
+                    logger.info(f"User {user_id} explicitly leaving session {current_session_id}")
+                    await manager.leave_session(user_id)
+                    current_session_id = None # Clear current session
+                    await websocket.send_text(json.dumps({"type": "session_left"}))
+                    # Client might send join_session again or disconnect
+                    # Let's break the inner loop and wait for potential join_session or disconnect
+                    # Or simply disconnect them? For now, let them linger until disconnect/rejoin.
+                    # We could add logic here to wait for join_session again.
+                    # Safest might be to close if they don't rejoin quickly.
+                    # Let's just break and rely on disconnect/timeout for now.
+                    pass # Continue outer loop, expecting potential rejoin or disconnect
+                    
                 # Handle other message types if needed
 
             except json.JSONDecodeError:
-                logger.warning(f"Received invalid JSON via WS from {user_id}: {data}")
+                logger.warning(f"Received invalid JSON via WS from {user_id} in session {current_session_id}: {data}")
             except Exception as e:
-                logger.error(f"Error processing WS message from {user_id}: {e}")
+                logger.error(f"Error processing WS message from {user_id} in session {current_session_id}: {e}")
                 # Consider sending an error message back to the user
-                # await manager.send_personal_message(json.dumps({"type": "error", "detail": "Processing error"}), user_id)
 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected handler for user {user_id} ({user.username})")
-        # Broadcast offline status before fully disconnecting
-        await manager.broadcast_presence(user_id, is_online=False)
-        manager.disconnect(user_id)
+        logger.info(f"WebSocket disconnected handler for user {user_id} ({user.username}) from session {current_session_id}")
+        # Ensure user leaves the session if they were in one
+        if current_session_id: # Check if user successfully joined a session
+            await manager.leave_session(user_id)
+        
     except Exception as e:
-        # Log unexpected errors and ensure cleanup
-        logger.error(f"Unexpected error in WebSocket for user {user_id} ({user.username}): {e}")
+        logger.error(f"Unexpected error in WebSocket for user {user_id} ({user.username}) in session {current_session_id}: {e}")
         logger.error(traceback.format_exc())
-        # Broadcast offline status if possible and disconnect
-        await manager.broadcast_presence(user_id, is_online=False)
-        manager.disconnect(user_id)
+        # Ensure user leaves the session if they were in one
+        if current_session_id: # Check if user successfully joined a session
+             await manager.leave_session(user_id)
         # Ensure the connection is closed from the server side
-        await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        try:
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        except Exception as close_err:
+            logger.error(f"Error closing websocket for user {user_id} after error: {close_err}")
 
 # Chat Attachment/Upload Endpoints
 @app.post("/api/chat/upload", response_model=FileUploadResponse)

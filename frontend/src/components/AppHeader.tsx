@@ -19,6 +19,7 @@ import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import LinkIcon from '@mui/icons-material/Link';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
+import LogoutIcon from '@mui/icons-material/Logout'; // Add LogoutIcon
 import { CustomModel } from '../types'; // Import CustomModel type
 
 interface AppHeaderProps {
@@ -34,6 +35,9 @@ interface AppHeaderProps {
   onUploadFileClick: () => void;
   onAddWebsiteClick: () => void;
   onDeleteModelClick: (modelId: string) => void;
+  // Add login props
+  isLoggedIn: boolean;
+  onLogout: () => void;
 }
 
 const AppHeader: React.FC<AppHeaderProps> = ({
@@ -49,6 +53,9 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   onUploadFileClick,
   onAddWebsiteClick,
   onDeleteModelClick,
+  // Destructure login props
+  isLoggedIn,
+  onLogout,
 }) => {
 
   const selectedModel = customModels.find(m => m.id === selectedModelId);
@@ -56,11 +63,21 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   return (
     <AppBar position="static" color="default" elevation={1}>
       <Toolbar sx={{ flexDirection: 'column', alignItems: 'stretch', pt: 1, pb: 1 }}>
-        {/* Top Row: Title */}
+        {/* Top Row: Title & Logout Button */}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
           <Typography variant="h6">
             AI Chatbot
           </Typography>
+          {isLoggedIn && (
+            <Button 
+              color="inherit" 
+              onClick={onLogout}
+              startIcon={<LogoutIcon />}
+              size="small"
+            >
+              Logout
+            </Button>
+          )}
         </Box>
 
         {/* Second Row: Tabs */}
