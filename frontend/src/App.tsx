@@ -25,6 +25,7 @@ import FileUploadDialog from './components/dialogs/FileUploadDialog';
 import AddWebsiteDialog from './components/dialogs/AddWebsiteDialog';
 import SettingsDialog from './components/dialogs/SettingsDialog';
 import { getTheme } from './theme';
+import { SettingsProvider } from './contexts/SettingsContext';
 
 // --- Axios Instance with Interceptor ---
 const apiClient = axios.create({
@@ -990,16 +991,10 @@ function App() {
   }, []);
 
   // Handle purpose change from settings
-  const handlePurposeChangeFromSettings = useCallback((newPurpose: string, newSystemPrompt?: string) => {
+  const handlePurposeChangeFromSettings = useCallback((newPurpose: string) => {
     console.log('Purpose change from settings:', newPurpose);
     setPurpose(newPurpose);
-    
-    // If a system prompt was provided, update it if there's an active session
-    if (newSystemPrompt && activeSessionId) {
-      console.log('Updating system prompt from purpose selection:', newSystemPrompt.substring(0, 50) + '...');
-      handleUpdateSystemPrompt(activeSessionId, newSystemPrompt);
-    }
-  }, [activeSessionId, handleUpdateSystemPrompt]);
+  }, []);
   
   // Adapter function for system prompt changes from settings dialog
   const handleSystemPromptChangeFromSettings = useCallback((prompt: string) => {
@@ -1063,6 +1058,9 @@ function App() {
   const chatMessageStyle = useMemo(() => ({
     fontSize: `${fontSize}px`
   }), [fontSize]);
+
+  // Create theme based on dark mode setting
+  const theme = useMemo(() => getTheme(darkMode ? 'dark' : 'light'), [darkMode]);
 
   // Main render logic
   const appContent = isLoggedIn ? (
@@ -1225,14 +1223,6 @@ function App() {
         systemPrompt={activeSessionSystemPrompt}
         onSystemPromptChange={handleSystemPromptChangeFromSettings}
         activeSessionId={activeSessionId}
-        fontSize={fontSize}
-        onFontSizeChange={handleFontSizeChange}
-        darkMode={darkMode}
-        onDarkModeChange={handleDarkModeChange}
-        autoSuggest={autoSuggest}
-        onAutoSuggestChange={handleAutoSuggestChange}
-        promptImprovement={promptImprovement}
-        onPromptImprovementChange={handlePromptImprovementChange}
       />
       
       <Snackbar
@@ -1400,9 +1390,11 @@ function App() {
 
   // Final return with ThemeProvider wrapper
   return (
-    <ThemeProvider theme={getTheme(darkMode ? 'dark' : 'light')}>
-      <CssBaseline />
-      {appContent}
+    <ThemeProvider theme={theme}>
+      <SettingsProvider>
+        <CssBaseline />
+        {appContent}
+      </SettingsProvider>
     </ThemeProvider>
   );
 }

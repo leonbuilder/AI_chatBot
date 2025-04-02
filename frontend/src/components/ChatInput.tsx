@@ -53,12 +53,14 @@ import TuneIcon from '@mui/icons-material/Tune';
 import CloseIcon from '@mui/icons-material/Close';
 import axios from 'axios';
 import { API_BASE_URL } from '../constants';
+import { useSettings } from '../contexts/SettingsContext';
 
 interface ChatInputProps {
   onSend: (message: string) => void;
   loading: boolean;
   showSuggestions?: boolean; // Whether to show auto-suggestions
   enablePromptImprovement?: boolean; // Whether to enable prompt improvement assistance
+  activeSessionId?: string; // Optional active session ID
 }
 
 // Create an axios instance with auth header
@@ -111,9 +113,11 @@ const ChatInput: React.FC<ChatInputProps> = ({
   onSend, 
   loading, 
   showSuggestions = true,
-  enablePromptImprovement = false
+  enablePromptImprovement = false,
+  activeSessionId
 }) => {
   const theme = useTheme();
+  const { settings, updateSetting, isKeyboardShortcut } = useSettings();
   const [input, setInput] = useState('');
   const [rows, setRows] = useState(1);
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -311,11 +315,33 @@ const ChatInput: React.FC<ChatInputProps> = ({
     setPromptImprovement(null);
   };
 
-  const handleKeyPress = (event: React.KeyboardEvent) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      handleSendClick();
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (loading) return;
+    
+    // Use settings shortcuts
+    if (e.key === 'Enter') {
+      // Check if it matches the sendMessage shortcut (typically just Enter)
+      if (!e.shiftKey && !e.ctrlKey && !e.altKey && 
+          isKeyboardShortcut(e.nativeEvent as unknown as KeyboardEvent, 'sendMessage')) {
+        e.preventDefault();
+        handleSendClick();
+      }
+      // Check if it matches the newLine shortcut (typically Shift+Enter)
+      else if (isKeyboardShortcut(e.nativeEvent as unknown as KeyboardEvent, 'newLine')) {
+        // Let the default behavior happen (new line)
+        return;
+      }
     }
+    
+    // Check for improvePrompt shortcut
+    if (isKeyboardShortcut(e.nativeEvent as unknown as KeyboardEvent, 'improvePrompt')) {
+      e.preventDefault();
+      if (enablePromptImprovement && input.trim()) {
+        setShowImprovementPanel(true);
+      }
+    }
+    
+    // Handle other shortcuts as needed
   };
 
   const handleSuggestionClick = (suggestion: string) => {
@@ -466,6 +492,40 @@ const ChatInput: React.FC<ChatInputProps> = ({
     if (improvementStrength <= 0.6) return "Balanced";
     return "Aggressive";
   };
+
+  // Add effect to listen for global shortcuts
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Only apply shortcuts when this component is active/mounted
+      if (!activeSessionId) return;
+      
+      // Focus input shortcut (typically / key)
+      if (isKeyboardShortcut(e, 'focusInput') && textFieldRef.current) {
+        e.preventDefault();
+        textFieldRef.current.focus();
+      }
+      
+      // Clear chat shortcut
+      if (isKeyboardShortcut(e, 'clearChat')) {
+        e.preventDefault();
+        // Add clear chat functionality or trigger a dialog
+      }
+      
+      // New chat shortcut
+      if (isKeyboardShortcut(e, 'newChat')) {
+        e.preventDefault();
+        // Add new chat functionality
+      }
+    };
+    
+    // Add the event listener
+    document.addEventListener('keydown', handleGlobalKeyDown);
+    
+    // Clean up
+    return () => {
+      document.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, [activeSessionId, isKeyboardShortcut, textFieldRef]);
 
   return (
     <Box 
