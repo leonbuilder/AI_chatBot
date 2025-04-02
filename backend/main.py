@@ -2031,45 +2031,112 @@ async def improve_prompt(request: Request, current_user: User = Depends(get_curr
     try:
         data = await request.json()
         input_text = data.get("prompt", "")
+        improvement_style = data.get("style", "balanced") # Options: concise, detailed, technical, creative, balanced
+        domain = data.get("domain", "") # Optional domain context
+        
+        # Get user's previous prompts and usage history
+        user_history = []
+        try:
+            from models import Message  # Import here to avoid circular imports
+            user_prompts = await Message.filter(
+                user_id=current_user.id,
+                role="user"
+            ).order_by("-created_at").limit(20).values_list("content", flat=True)
+            
+            if user_prompts:
+                # Get only the last 5 prompts to avoid too much context
+                user_history = list(user_prompts[:5])
+        except Exception as e:
+            logger.warning(f"Error getting user history: {str(e)}")
         
         if not input_text or len(input_text.strip()) < 5:
-            return {"improved_prompt": input_text}
+            return {"improved_prompt": input_text, "alternatives": []}
         
-        # Generate direct improvement using OpenAI
+        # Prepare system message based on style and domain
+        system_content = """You are an expert at improving text. Your job is to directly enhance any text provided to you."""
+        
+        if improvement_style == "concise":
+            system_content += " Make it clear, direct, and as brief as possible while maintaining the original intent."
+        elif improvement_style == "detailed":
+            system_content += " Make it more comprehensive, thorough, and detailed while maintaining clarity."
+        elif improvement_style == "technical":
+            system_content += " Make it more precise, using technical language and specificity appropriate to the domain."
+        elif improvement_style == "creative":
+            system_content += " Make it more engaging, vivid, and creative while maintaining the original intent."
+        else:  # balanced
+            system_content += " Make it clearer, more specific, and more effective without changing the original intent."
+        
+        # Add domain context if provided
+        if domain:
+            system_content += f" Optimize specifically for {domain} context and terminology."
+            
+        # Add user history context if available
+        if user_history:
+            system_content += " Consider the user's writing style from their previous prompts to maintain consistency."
+            
+        system_content += """ Format your response as a JSON object with two fields:
+        1. "improved_prompt": The primary improved version of the text.
+        2. "alternatives": An array containing 2 alternative improvements with different approaches."""
+            
+        # Build messages for the API call
+        messages = [
+            {"role": "system", "content": system_content}
+        ]
+        
+        # Add user history context if available
+        if user_history:
+            history_content = f"Here are some examples of the user's previous prompts for style reference: {', '.join([f'"{p}"' for p in user_history])}"
+            messages.append({"role": "system", "content": history_content})
+            
+        # Add the actual prompt to improve
+        messages.append({"role": "user", "content": f"Improve this text: '{input_text}'"})
+        
+        # Generate improvements using OpenAI
         response = client.chat.completions.create(
             model="gpt-4o-mini", # Using a smaller model for faster response
-            messages=[
-                {"role": "system", "content": """You are an expert at improving text. Your job is to directly enhance any text provided to you.
-                 Make it clearer, more specific, and more effective without changing the original intent.
-                 Do not provide suggestions or tips - just return the improved version.
-                 Maintain the same basic structure and intent, but make it more precise and well-written.
-                 Format your response to contain only the improved text with no explanations."""},
-                {"role": "user", "content": f"Improve this text: '{input_text}'"}
-            ],
-            max_tokens=500,
-            temperature=0.5
+            messages=messages,
+            max_tokens=800,
+            temperature=0.7,
+            response_format={"type": "json_object"}
         )
         
         # Get the improved content
-        improved_content = response.choices[0].message.content
-        if improved_content is None:
+        content = response.choices[0].message.content
+        if content is None:
             logger.error("Received None as content from OpenAI API")
-            return {"improved_prompt": input_text}
-            
-        # Remove any quotes that might surround the text
-        improved_content = improved_content.strip().strip('\'\"')
+            return {"improved_prompt": input_text, "alternatives": []}
         
-        # If nothing changed, just return the original
-        if improved_content.lower() == input_text.lower():
-            return {"improved_prompt": input_text}
+        try:
+            # Parse JSON response
+            result = json.loads(content)
+            improved_prompt = result.get("improved_prompt", "")
+            alternatives = result.get("alternatives", [])
+            
+            # Remove any quotes that might surround the text
+            improved_prompt = improved_prompt.strip().strip('\'\"')
+            alternatives = [alt.strip().strip('\'\"') for alt in alternatives]
+            
+            # Filter out any alternatives that are identical to the improved prompt
+            alternatives = [alt for alt in alternatives if alt != improved_prompt]
+            
+            # If nothing changed, just return the original
+            if improved_prompt.lower() == input_text.lower():
+                return {"improved_prompt": input_text, "alternatives": []}
                 
-        return {
-            "improved_prompt": improved_content
-        }
+            return {
+                "improved_prompt": improved_prompt,
+                "alternatives": alternatives
+            }
+            
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse JSON response for prompt improvement")
+            # Fall back to simpler approach for backward compatibility
+            content = content.strip().strip('\'\"')
+            return {"improved_prompt": content, "alternatives": []}
             
     except Exception as e:
         logger.error(f"Error improving prompt: {str(e)}")
-        return {"improved_prompt": input_text, "error": str(e)}
+        return {"improved_prompt": input_text, "alternatives": [], "error": str(e)}
 # --- End AI Powered Prompt Improvement Endpoint ---
 
 # --- AI Generated Purpose Categories Endpoint ---

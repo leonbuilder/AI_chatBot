@@ -20,12 +20,23 @@ import {
   IconButton,
   CircularProgress,
   Tab,
-  Tabs
+  Tabs,
+  Grid,
+  Paper,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Tooltip,
+  Chip
 } from '@mui/material';
-import { AutoFixHigh } from '@mui/icons-material';
+import { AutoFixHigh, Close as CloseIcon, SettingsApplications, Tune } from '@mui/icons-material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import axios from 'axios';
 import { API_BASE_URL } from '../../constants';
 import HierarchicalPurposeSelector from '../HierarchicalPurposeSelector';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import DomainIcon from '@mui/icons-material/Domain';
+import BrushIcon from '@mui/icons-material/Brush';
 
 // Create an axios instance with auth header
 const apiClient = axios.create({
@@ -67,6 +78,26 @@ interface SettingsDialogProps {
   onPromptImprovementChange: (enabled: boolean) => void;
 }
 
+// Improvement styles for prompt improver
+const IMPROVEMENT_STYLES = [
+  { value: 'balanced', label: 'Balanced' },
+  { value: 'concise', label: 'Concise' },
+  { value: 'detailed', label: 'Detailed' },
+  { value: 'technical', label: 'Technical' },
+  { value: 'creative', label: 'Creative' }
+];
+
+// Domains for prompt improver
+const DOMAINS = [
+  { value: '', label: 'General' },
+  { value: 'business', label: 'Business' },
+  { value: 'technical', label: 'Technical' },
+  { value: 'academic', label: 'Academic' },
+  { value: 'creative', label: 'Creative' },
+  { value: 'scientific', label: 'Scientific' },
+  { value: 'medical', label: 'Medical' }
+];
+
 const SettingsDialog: React.FC<SettingsDialogProps> = ({
   open,
   onClose,
@@ -95,6 +126,17 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [improvingPrompt, setImprovingPrompt] = useState(false);
   const [tabValue, setTabValue] = useState(0);
   
+  // Prompt improvement settings
+  const [autoImprove, setAutoImprove] = useState<boolean>(
+    localStorage.getItem('autoImprovePrompts') === 'true'
+  );
+  const [improvementStyle, setImprovementStyle] = useState<string>(
+    localStorage.getItem('promptImprovementStyle') || 'balanced'
+  );
+  const [domainContext, setDomainContext] = useState<string>(
+    localStorage.getItem('promptImprovementDomain') || ''
+  );
+  
   // Add state for using new purpose selector
   const [useHierarchicalSelector, setUseHierarchicalSelector] = useState(true);
 
@@ -106,6 +148,11 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
       setLocalDarkMode(darkMode);
       setLocalAutoSuggest(autoSuggest);
       setLocalPromptImprovement(promptImprovement);
+      
+      // Update prompt improvement settings
+      setAutoImprove(localStorage.getItem('autoImprovePrompts') === 'true');
+      setImprovementStyle(localStorage.getItem('promptImprovementStyle') || 'balanced');
+      setDomainContext(localStorage.getItem('promptImprovementDomain') || '');
     }
   }, [open, systemPrompt, currentPurpose, fontSize, darkMode, autoSuggest, promptImprovement]);
 
@@ -148,6 +195,24 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setLocalPromptImprovement(event.target.checked);
   };
   
+  const handleAutoImproveChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = event.target.checked;
+    setAutoImprove(newValue);
+    localStorage.setItem('autoImprovePrompts', String(newValue));
+  };
+  
+  const handleImprovementStyleChange = (event: SelectChangeEvent<string>) => {
+    const newValue = event.target.value;
+    setImprovementStyle(newValue);
+    localStorage.setItem('promptImprovementStyle', newValue);
+  };
+  
+  const handleDomainContextChange = (event: SelectChangeEvent<string>) => {
+    const newValue = event.target.value;
+    setDomainContext(newValue);
+    localStorage.setItem('promptImprovementDomain', newValue);
+  };
+  
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
   };
@@ -158,7 +223,9 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setImprovingPrompt(true);
     try {
       const response = await apiClient.post('/api/improve-prompt', { 
-        prompt: localSystemPrompt
+        prompt: localSystemPrompt,
+        style: improvementStyle,
+        domain: domainContext
       });
       
       if (response.data.improved_prompt) {
