@@ -1315,6 +1315,52 @@ async def get_session_messages(
         logger.error(f"Error retrieving messages for session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Could not retrieve chat messages")
 
+# Add the missing delete endpoint here
+@app.delete("/api/chat_sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chat_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Soft delete a chat session by marking all its messages as deleted."""
+    logger.info(f"Attempting to delete session {session_id} for user {current_user.username}")
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # First, check if the session exists and belongs to the user
+            cursor.execute("SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
+            if not cursor.fetchone():
+                # Session doesn't exist or doesn't belong to user
+                # Return 204 anyway to make it idempotent, or 404/403 if preferred
+                logger.warning(f"Attempt to delete non-existent or unauthorized session {session_id} by user {current_user.username}")
+                return # Return No Content even if not found for idempotency
+            
+            # Mark associated messages as deleted (ensure it targets only the specific session)
+            cursor.execute(
+                "UPDATE chat_messages SET is_deleted = TRUE WHERE session_id = ?",
+                (session_id,)
+            )
+            deleted_count = cursor.rowcount
+            logger.info(f"Marked {deleted_count} messages as deleted for session {session_id}")
+            
+            # Delete the session metadata itself from chat_sessions
+            cursor.execute("DELETE FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
+            session_deleted = cursor.rowcount > 0
+            logger.info(f"Deleted session metadata for {session_id}: {session_deleted}")
+            
+            conn.commit()
+            logger.info(f"User {current_user.username} successfully deleted session {session_id}.")
+            return # FastAPI handles 204 No Content response
+            
+    except Exception as e:
+        # Rollback in case of error during delete process
+        try:
+            if conn: conn.rollback()
+        except Exception as rb_err:
+            logger.error(f"Rollback failed during session deletion: {rb_err}")
+            
+        logger.error(f"Error deleting session {session_id} for user {current_user.username}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not delete chat session")
+
 class SessionUpdateRequest(BaseModel):
     title: Optional[str] = None # Allow updating title
     system_prompt: Optional[str] = None # Allow updating system prompt
