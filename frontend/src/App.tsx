@@ -77,7 +77,8 @@ function App() {
   const [registerLoading, setRegisterLoading] = useState<boolean>(false);
   const [registerError, setRegisterError] = useState<string>('');
 
-  // Existing State
+  // --- Chat & Streaming State ---
+  const [currentEventSource, setCurrentEventSource] = useState<EventSource | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [purpose, setPurpose] = useState('General Knowledge');
   const [loading, setLoading] = useState(false);
@@ -147,49 +148,263 @@ function App() {
   const handleSend = useCallback(async (messageContent: string) => {
     if (!messageContent.trim() || !isLoggedIn) return;
 
+    // --- Close previous connection if any ---
+    currentEventSource?.close(); 
+    setCurrentEventSource(null);
+    // --- End close previous connection ---
+
     const userMessage: Message = {
+      id: `user-${Date.now()}`,
       role: 'user',
       content: messageContent,
       timestamp: new Date(),
     };
 
-    setMessages((prev) => [...prev, userMessage]);
-    setLoading(true);
+    const streamingAssistantMessageId = `assistant-${Date.now()}`;
+    const assistantMessagePlaceholder: Message = {
+      id: streamingAssistantMessageId,
+      role: 'assistant',
+      content: '', // Start with empty content
+      timestamp: new Date(),
+      isStreaming: true, // Mark as streaming
+    };
 
-    try {
-      const messagesToSend = [...messages, userMessage];
-      const response = await apiClient.post(`/api/chat`, { 
-        messages: messagesToSend.map(m => ({ role: m.role, content: m.content })),
-        purpose,
-        model_id: selectedModelId,
-      });
+    // Add user message and placeholder immediately
+    setMessages((prev) => [...prev, userMessage, assistantMessagePlaceholder]);
+    setLoading(false); // Reset general loading, streaming is handled differently
 
-      console.log('Server response:', response.data);
-      const responseMessage = response.data.message || "No response received";
-      
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: responseMessage,
-        timestamp: new Date(),
-      };
+    // Prepare data for backend (assuming it accepts history in query/body)
+    // NOTE: Adjust how history is sent based on backend requirements!
+    const historyForBackend = [...messages, userMessage].map(m => ({ role: m.role, content: m.content }));
 
-      setMessages((prev) => [...prev, assistantMessage]);
-    } catch (error) {
-      console.error('Error sending message:', error);
-      const errorContent = axios.isAxiosError(error) && error.response?.status === 401 
-        ? 'Authentication error. Please log in again.'
-        : 'Sorry, I encountered an error. Please try again.';
-        
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: errorContent,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setLoading(false);
+    // Prepare query parameters for the streaming endpoint
+    const token = getAuthToken(); // Get token from localStorage
+    if (!token) {
+      showSnackbar("Authentication token not found. Please log in.", "error");
+      currentEventSource?.close(); // Close any old connection
+      setCurrentEventSource(null);
+      // Update placeholder to show auth error
+      setMessages((prev) =>
+         prev.map((msg) =>
+            msg.id === streamingAssistantMessageId
+            ? { ...msg, content: "Authentication Error", isStreaming: false, error: "Token not found" }
+            : msg
+        )
+      );
+      return; // Stop processing
     }
-  }, [messages, purpose, selectedModelId, isLoggedIn]);
+
+    const queryParams = new URLSearchParams({
+        token: token, // Add token here
+        history: JSON.stringify(historyForBackend),
+        purpose: purpose,
+        ...(selectedModelId && { model_id: selectedModelId })
+    });
+
+    // --- Setup EventSource --- 
+    const eventSourceUrl = `${API_BASE_URL}/api/chat_stream?${queryParams.toString()}`;
+    const es = new EventSource(eventSourceUrl);
+    setCurrentEventSource(es); 
+
+    es.onopen = () => {
+      console.log("SSE connection opened.");
+    };
+
+    es.onmessage = (event) => {
+      try {
+        const parsedData = JSON.parse(event.data);
+        if (parsedData.chunk) {
+          setMessages((prev) => 
+            prev.map((msg) => 
+              msg.id === streamingAssistantMessageId
+                ? { ...msg, content: msg.content + parsedData.chunk } 
+                : msg
+            )
+          );
+        } else if (parsedData.error) {
+            // Handle specific error message from stream
+            console.error("Error from stream:", parsedData.error);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingAssistantMessageId
+                  ? { ...msg, content: `Error: ${parsedData.error}`, isStreaming: false, error: parsedData.error }
+                  : msg
+              )
+            );
+            es.close(); // Close connection on error
+            setCurrentEventSource(null);
+        } else if (parsedData.done) {
+             // Optional: Backend signals completion
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingAssistantMessageId
+                  ? { ...msg, isStreaming: false } 
+                  : msg
+              )
+            );
+            es.close();
+            setCurrentEventSource(null);
+        }
+      } catch (err) {
+        console.error("Failed to parse SSE message:", err, "Data:", event.data);
+        // Update UI to show a generic parse error
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === streamingAssistantMessageId
+              ? { ...msg, content: "Error receiving stream data.", isStreaming: false, error: "Stream parsing failed" }
+              : msg
+          )
+        );
+        es.close();
+        setCurrentEventSource(null);
+      }
+    };
+
+    es.onerror = (err) => {
+      console.error("EventSource failed:", err);
+      setMessages((prev) => 
+        prev.map((msg) => 
+          msg.id === streamingAssistantMessageId
+            ? { ...msg, content: "Connection error with the server.", isStreaming: false, error: "Connection failed" }
+            : msg
+        )
+      );
+      es.close();
+      setCurrentEventSource(null);
+    };
+
+    // setLoading(true); // Maybe use a different state for streaming indication
+  
+  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource]); // Add currentEventSource dependency
+  
+  const handleRegenerate = useCallback((messageIdToRegenerate: string) => {
+    if (!isLoggedIn) return;
+
+    const messageIndex = messages.findIndex(msg => msg.id === messageIdToRegenerate);
+
+    // Ensure the message exists, it's an assistant message, and it's not currently streaming
+    if (messageIndex <= 0 || messages[messageIndex].role !== 'assistant' || messages[messageIndex].isStreaming) {
+      console.error("Cannot regenerate this message:", messageIdToRegenerate, messages[messageIndex]);
+      showSnackbar('Cannot regenerate this message.', 'warning');
+      return;
+    }
+
+    // --- Close previous connection if any ---
+    currentEventSource?.close(); 
+    setCurrentEventSource(null);
+    // --- End close previous connection ---
+
+    // History includes messages up to (but not including) the one being regenerated
+    const historyForBackend = messages.slice(0, messageIndex).map(m => ({ role: m.role, content: m.content }));
+
+    // Create a new ID and placeholder for the regenerating message
+    const streamingAssistantMessageId = `assistant-${Date.now()}-regen`;
+    const assistantMessagePlaceholder: Message = {
+      id: streamingAssistantMessageId,
+      role: 'assistant',
+      content: '', 
+      timestamp: new Date(),
+      isStreaming: true,
+    };
+
+    // Replace the old message and any subsequent ones with the new placeholder
+    setMessages((prev) => [...prev.slice(0, messageIndex), assistantMessagePlaceholder]);
+    setLoading(false); 
+
+    // Prepare query parameters for the streaming endpoint
+    const token = getAuthToken(); // Get token from localStorage
+    if (!token) {
+      showSnackbar("Authentication token not found. Please log in.", "error");
+      currentEventSource?.close(); // Close any old connection
+      setCurrentEventSource(null);
+      // Update placeholder to show auth error
+      setMessages((prev) =>
+         prev.map((msg) =>
+            msg.id === streamingAssistantMessageId
+            ? { ...msg, content: "Authentication Error", isStreaming: false, error: "Token not found" }
+            : msg
+        )
+      );
+      return; // Stop processing
+    }
+
+    const queryParams = new URLSearchParams({
+        token: token, // Add token
+        history: JSON.stringify(historyForBackend),
+        purpose: purpose,
+        ...(selectedModelId && { model_id: selectedModelId })
+    });
+
+    // --- Setup EventSource (Similar to handleSend) --- 
+    const eventSourceUrl = `${API_BASE_URL}/api/chat_stream?${queryParams.toString()}`;
+    const es = new EventSource(eventSourceUrl);
+    setCurrentEventSource(es);
+
+    es.onopen = () => {
+      console.log("SSE connection opened for regeneration.");
+    };
+
+    es.onmessage = (event) => {
+       try {
+        const parsedData = JSON.parse(event.data);
+        if (parsedData.chunk) {
+          setMessages((prev) => 
+            prev.map((msg) => 
+              msg.id === streamingAssistantMessageId
+                ? { ...msg, content: msg.content + parsedData.chunk } 
+                : msg
+            )
+          );
+        } else if (parsedData.error) {
+            console.error("Error from regeneration stream:", parsedData.error);
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingAssistantMessageId
+                  ? { ...msg, content: `Error: ${parsedData.error}`, isStreaming: false, error: parsedData.error }
+                  : msg
+              )
+            );
+            es.close();
+            setCurrentEventSource(null);
+        } else if (parsedData.done) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === streamingAssistantMessageId
+                  ? { ...msg, isStreaming: false } 
+                  : msg
+              )
+            );
+            es.close();
+            setCurrentEventSource(null);
+        }
+      } catch (err) {
+        console.error("Failed to parse SSE message during regeneration:", err, "Data:", event.data);
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === streamingAssistantMessageId
+              ? { ...msg, content: "Error receiving stream data.", isStreaming: false, error: "Stream parsing failed" }
+              : msg
+          )
+        );
+        es.close();
+        setCurrentEventSource(null);
+      }
+    };
+
+    es.onerror = (err) => {
+      console.error("EventSource failed during regeneration:", err);
+      setMessages((prev) => 
+        prev.map((msg) => 
+          msg.id === streamingAssistantMessageId
+            ? { ...msg, content: "Connection error during regeneration.", isStreaming: false, error: "Connection failed" }
+            : msg
+        )
+      );
+      es.close();
+      setCurrentEventSource(null);
+    };
+
+  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource]); // Add dependencies
   
   const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -575,9 +790,33 @@ function App() {
           messages={messages}
           loading={loading}
           messagesEndRef={messagesEndRef}
+          onRegenerate={handleRegenerate}
         />
 
         <ChatInput onSend={handleSend} loading={loading} />
+
+        {/* Add Stop Generating Button */}
+        {currentEventSource && (
+          <Box sx={{ p: 1, display: 'flex', justifyContent: 'center' }}>
+            <Button
+              variant="outlined"
+              color="secondary"
+              onClick={() => {
+                currentEventSource.close();
+                setCurrentEventSource(null);
+                // Optional: Update the last message state to indicate it was stopped
+                setMessages(prev => prev.map(msg => {
+                  if (msg.id === prev[prev.length - 1].id && msg.isStreaming) {
+                    return { ...msg, isStreaming: false, content: msg.content + ' [Stopped]' };
+                  }
+                  return msg;
+                }));
+              }}
+            >
+              Stop Generating
+            </Button>
+          </Box>
+        )}
       </Paper>
       
       <CreateModelDialog

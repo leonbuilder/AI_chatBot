@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, status, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Literal, Union, Optional, Dict, Any
 from openai import OpenAI  # type: ignore
@@ -21,6 +21,7 @@ from jose import JWTError, jwt
 from utils.web_utils import extract_website_content as extract_content, extract_website_with_subpages
 import shutil # For file operations
 import aiofiles # For async file operations
+import asyncio # Import asyncio for sleep
 
 # Import specific OpenAI types for Assistants API
 # from openai.types.beta import AssistantToolParam # For tools list type - Removed due to ImportError
@@ -422,197 +423,197 @@ async def root():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, current_user: User = Depends(get_current_user)):
+    logger.info(f"Received chat request for session: {request.session_id} from user: {current_user.username}")
+    
+    session_id = request.session_id or str(uuid.uuid4())
+    logger.debug(f"Using session_id: {session_id}")
+
+    # Validate and get user message content
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="No messages provided.")
+    user_message = request.messages[-1]
+    if user_message.role != 'user':
+        raise HTTPException(status_code=400, detail="Last message must be from user.")
+    user_content = user_message.content
+
+    # Save user message
     try:
-        session_id = request.session_id or str(uuid.uuid4())
-        logger.info(f"User {current_user.username} initiated chat request (Session: {session_id}) with purpose: {request.purpose}")
-        logger.info(f"Messages: {json.dumps([msg.model_dump() for msg in request.messages], indent=2)}")
-
-        if not request.messages:
-            raise ValueError("No messages provided in the request")
-
-        # Assume the last message is the user's current prompt
-        last_user_message = request.messages[-1]
-        if last_user_message.role != "user":
-            raise ValueError("Invalid message sequence: last message must be from user.")
-
-        # Save the user's message, passing attachments if provided
-        message_id = save_chat_message(
+        user_message_id = save_chat_message(
             user_id=current_user.id,
             session_id=session_id,
-            role=last_user_message.role,
-            content=last_user_message.content,
-            attachments=request.attachments # Pass attachments here
+            role="user",
+            content=user_content, # Use validated content
+            attachments=request.attachments
         )
-        
-        if not message_id:
-             # Handle error if message saving failed
-             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to save user message")
-
-        # Check if a custom model is specified
-        if request.model_id:
-            # Pass session_id to the custom model handler
-            assistant_response = await chat_with_custom_model(request, current_user, session_id)
-        else:
-            # Create system message based on purpose
-            system_message = {
-                "role": "system",
-                "content": f"You are a helpful AI assistant specialized in {request.purpose}. "
-                          f"Provide relevant and focused responses within this domain."
-            }
-
-            # Convert messages to OpenAI format (including system message)
-            openai_messages = [system_message] + [convert_to_openai_message(msg) for msg in request.messages]
-            logger.info(f"Converted messages: {json.dumps(openai_messages, indent=2)}")
-
-            logger.info("Calling OpenAI API...")
-            try:
-                model_to_use = "gpt-4o-mini" # Define model used
-                response = client.chat.completions.create(
-                    model=model_to_use,
-                    messages=openai_messages,  # type: ignore
-                    temperature=0.7,
-                    max_tokens=500,
-                    response_format={"type": "text"}
-                )
-                logger.info("Received response from OpenAI")
-
-                if not response.choices:
-                    raise ValueError("No response choices received from OpenAI")
-                
-                assistant_content = response.choices[0].message.content
-                if not assistant_content:
-                     assistant_content = "" # Ensure content is not None
-
-                # Save assistant's response
-                save_chat_message(
-                    user_id=current_user.id, # Associate with the user for history viewing
-                    session_id=session_id,
-                    role="assistant",
-                    content=assistant_content,
-                    model_used=model_to_use
-                )
-                
-                assistant_response = {
-                    "message": assistant_content,
-                    "role": "assistant"
-                }
-                
-            except Exception as e:
-                logger.error(f"Error during OpenAI API call: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"Error during OpenAI API call: {str(e)}")
-
-        # Return the structured response including session_id
-        return ChatResponse(
-            message=assistant_response["message"],
-            role="assistant",
-            session_id=session_id
-        )
-
-    except ValueError as e:
-        logger.error(f"Validation Error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        if not user_message_id:
+            raise HTTPException(status_code=500, detail="Failed to save user message")
     except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+         logger.exception("Error saving user message:")
+         raise HTTPException(status_code=500, detail=f"Internal server error saving message: {e}")
 
-async def chat_with_custom_model(request: ChatRequest, current_user: User, session_id: str):
-    """Use a custom model for chat completion, now saves messages."""
+    response_content_str = "Error: Could not generate response." # Initialize as string
+    model_used = "error"
+    
     try:
-        # Get custom model from database
+        if request.model_id:
+            logger.info(f"Routing chat to custom model: {request.model_id}")
+            # chat_with_custom_model saves internally and returns a dict {"message": ..., "role": ...}
+            custom_model_response = await chat_with_custom_model(request, current_user, session_id)
+            # Extract the actual message content string, ensuring it's a string
+            response_content_str = str(custom_model_response.get("message", "Error: No message content from custom model."))
+            model_used = custom_model_response.get("model_used", f"custom:{request.model_id}")
+
+        else:
+            logger.info("Routing chat to default OpenAI model")
+            openai_messages = [convert_to_openai_message(m) for m in request.messages]
+            model_name = "gpt-4o-mini"
+            logger.info(f"Using model: {model_name}")
+            
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=openai_messages,
+            )
+            gpt_response = completion.choices[0].message.content
+            # Ensure gpt_response is treated as a string
+            response_content_str = gpt_response if isinstance(gpt_response, str) else str(gpt_response or "") 
+            model_used = model_name
+            logger.debug(f"OpenAI Response: {response_content_str[:100]}...")
+
+        # Ensure response_content is a non-empty string before returning
+        if not response_content_str:
+            response_content_str = "Sorry, I couldn't generate a response."
+        elif not isinstance(response_content_str, str):
+             # This check might be redundant now but safe to keep
+             logger.warning(f"Assistant response was not a string (type: {type(response_content_str)}), converting.")
+             response_content_str = str(response_content_str)
+            
+        # Assistant message is saved within chat_with_custom_model or needs saving here for default
+        if not request.model_id:
+             assistant_message_id = save_chat_message(
+                 user_id=current_user.id,
+                 session_id=session_id,
+                 role="assistant",
+                 content=response_content_str, 
+                 model_used=model_used
+             )
+             if not assistant_message_id:
+                 logger.error(f"Failed to save assistant message for default model {model_name}")
+
+        return ChatResponse(message=response_content_str, role="assistant", session_id=session_id)
+
+    except Exception as e:
+        logger.exception("Error during chat processing:")
+        error_content = f"An error occurred: {e}"
+        # Save error message IF it wasn't already saved by chat_with_custom_model
+        save_chat_message(
+            user_id=current_user.id,
+            session_id=session_id,
+            role="assistant",
+            content=error_content,
+            model_used="error"
+        )
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+async def chat_with_custom_model(request: ChatRequest, current_user: User, session_id: str) -> Dict[str, str]:
+    """Use a custom model for chat completion, saves messages, returns dict {message, role, model_used}."""
+    try:
+        # Fetch model_data etc.
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM custom_models WHERE id = ?", (request.model_id,))
             model_data = cursor.fetchone()
-
             if not model_data:
                 raise HTTPException(status_code=404, detail=f"Custom model with id {request.model_id} not found")
-
-            # TODO: Check if the current user owns or has access to this custom model
-            # For now, any authenticated user can use any model.
-
             config = json.loads(model_data["config"])
             model_type = model_data["model_type"]
-            model_used = f"custom:{model_type}:{request.model_id}" # Identifier for the model used
-
-            # Get any associated files
             cursor.execute("SELECT * FROM model_files WHERE model_id = ?", (request.model_id,))
             file_data = cursor.fetchall()
             file_ids = [file["file_id"] for file in file_data] if file_data else []
 
         assistant_content = "Error: Could not generate response."
-        role = "assistant" # Default role
+        role = "assistant" 
+        model_used = f"custom:{model_type}:{request.model_id}"
 
+        # Assistant logic
         if model_type == "assistant":
             assistant_id = model_data["assistant_id"]
             if not assistant_id:
                  raise HTTPException(status_code=500, detail="Model is assistant type but has no assistant ID.")
-
             thread = client.beta.threads.create()
             for msg in request.messages:
                 if msg.role == "user":
+                    # TODO: Handle attachments for assistants
                     client.beta.threads.messages.create(thread_id=thread.id, role="user", content=msg.content)
-
             run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant_id)
             while run.status in ["queued", "in_progress"]:
+                await asyncio.sleep(0.5)
                 run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
-
             if run.status != "completed":
-                logger.error(f"Assistant run failed for thread {thread.id} and assistant {assistant_id}. Status: {run.status}. Last error: {run.last_error}")
+                logger.error(f"Assistant run failed. Status: {run.status}. Last error: {run.last_error}")
+                # Save error message before raising
+                save_chat_message(
+                    user_id=current_user.id, session_id=session_id, role="assistant",
+                    content=f"Assistant run failed. Status: {run.status}", model_used=f"{model_used}-error"
+                )
                 raise HTTPException(status_code=500, detail=f"Assistant run failed. Status: {run.status}")
-
             messages_response = client.beta.threads.messages.list(thread_id=thread.id)
+            assistant_content = "No response generated by assistant."
             for msg in reversed(messages_response.data):
                 if msg.role == "assistant":
                     assistant_content = safely_extract_assistant_text(msg.content)
-                    break # Found the latest assistant message
-            else:
-                logger.error(f"No assistant message found in thread {thread.id}")
-                assistant_content = "No response generated by assistant."
-
-        else:  # gpt or fine-tuned
-            system_message = {"role": "system", "content": config.get("instructions", f"You are a helpful AI assistant specialized in {request.purpose}.")}
-            if config.get("website_content"):
+                    break
+        
+        # GPT logic
+        else:
+             system_message = {"role": "system", "content": config.get("instructions", f"You are a helpful AI assistant specialized in {request.purpose}.")}
+             if config.get("website_content"):
                 system_message["content"] += f"\n\nReference website content: {config.get('website_content')}"
+             openai_messages = [system_message] + [convert_to_openai_message(msg) for msg in request.messages]
+             model_name = config.get("model", "gpt-4o-mini")
+             model_used = f"custom:gpt:{model_name}"
+             response = client.chat.completions.create(
+                 model=model_name,
+                 messages=openai_messages,
+                 temperature=config.get("temperature", 0.7),
+                 max_tokens=config.get("max_tokens", 500),
+                 response_format={"type": "text"}
+             )
+             if not response.choices:
+                 # Save error before raising
+                 save_chat_message(
+                     user_id=current_user.id, session_id=session_id, role="assistant",
+                     content="Error: No response choices received from OpenAI for custom GPT model.", model_used=f"{model_used}-error"
+                 )
+                 raise ValueError("No response choices received from OpenAI")
+             assistant_content = response.choices[0].message.content or ""
 
-            openai_messages = [system_message] + [convert_to_openai_message(msg) for msg in request.messages]
-            model_name = config.get("model", "gpt-4o-mini")
-            model_used = f"custom:gpt:{model_name}" # More specific model identifier
+        # Ensure assistant_content is a string
+        assistant_content_str = assistant_content if isinstance(assistant_content, str) else str(assistant_content or "")
+        if not assistant_content_str:
+             assistant_content_str = "Sorry, I couldn't generate a response." # Provide default if empty
 
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=openai_messages,  # type: ignore
-                temperature=config.get("temperature", 0.7),
-                max_tokens=config.get("max_tokens", 500),
-                response_format={"type": "text"}
-            )
-
-            if not response.choices:
-                raise ValueError("No response choices received from OpenAI")
-            
-            assistant_content = response.choices[0].message.content
-            if not assistant_content:
-                 assistant_content = "" # Ensure content is not None
-
-        # Save assistant's response (regardless of type: assistant or gpt)
+        # Save successful assistant response
         save_chat_message(
             user_id=current_user.id,
             session_id=session_id,
             role=role,
-            content=assistant_content,
+            content=assistant_content_str,
             model_used=model_used
         )
 
-        # Return the standard response dictionary expected by the main chat endpoint
         return {
-            "message": assistant_content,
+            "message": assistant_content_str,
             "role": role,
+            "model_used": model_used 
         }
 
     except Exception as e:
-        logger.error(f"Error in custom model chat: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        # Log the error but don't save a message, let the main endpoint handle HTTPException
+        logger.error(f"Error in custom model chat: {str(e)}", exc_info=True)
+        # Save error message before re-raising (will be caught by main endpoint)
+        save_chat_message(
+            user_id=current_user.id, session_id=session_id, role="assistant",
+            content=f"An error occurred processing the custom model request: {e}", model_used=f"custom:{request.model_id}-error"
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/custom_models", response_model=CustomModelResponse)
@@ -1294,8 +1295,7 @@ async def search_chat_messages(
         logger.error(f"Error searching messages for user {current_user.username} with query '{query}': {e}")
         raise HTTPException(status_code=500, detail="Could not perform message search")
 
-# --- Helper Functions (General) ---
-
+# --- Helper Function to Save Messages (Restored) ---
 def save_chat_message(
     user_id: str, 
     session_id: str, 
@@ -1368,333 +1368,188 @@ def save_chat_message(
     except Exception as e:
         # Ensure conn is defined before trying rollback
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception as rb_err:
+                logger.error(f"Error during rollback after save_chat_message failure: {rb_err}")
         logger.error(f"Failed to save chat message or link attachments: {e}")
         # Log traceback for detailed debugging
         logger.error(traceback.format_exc())
         return None
 
-# WebSocket Connection Manager
-class ConnectionManager:
-    def __init__(self):
-        # Store active connections: session_id -> {user_id -> websocket}
-        self.session_connections: Dict[str, Dict[str, WebSocket]] = {}
-        # Store which session each user_id is currently in: user_id -> session_id
-        self.user_session_map: Dict[str, str] = {}
-
-    async def connect(self, websocket: WebSocket, user_id: str):
-        # Connection happens first, joining a session is a separate step via WS message
-        await websocket.accept()
-        # We don't assign to a session here initially
-        logger.info(f"WebSocket connected for user {user_id} (pending session join)")
-        # Maybe send a message indicating successful connection, awaiting session join?
-        await websocket.send_text(json.dumps({"type": "connected", "detail": "Please join a session."}))
-
-    async def join_session(self, websocket: WebSocket, user_id: str, session_id: str):
-        # Remove user from any previous session they might be in
-        await self.leave_session(user_id)
-        
-        if session_id not in self.session_connections:
-            self.session_connections[session_id] = {}
-        self.session_connections[session_id][user_id] = websocket
-        self.user_session_map[user_id] = session_id
-        logger.info(f"User {user_id} joined session {session_id}")
-        # Broadcast presence within the session
-        await self.broadcast_presence(user_id, session_id, is_online=True)
-
-    async def leave_session(self, user_id: str):
-        if user_id in self.user_session_map:
-            session_id = self.user_session_map[user_id]
-            if session_id in self.session_connections and user_id in self.session_connections[session_id]:
-                del self.session_connections[session_id][user_id]
-                # Clean up session dict if empty
-                if not self.session_connections[session_id]:
-                    del self.session_connections[session_id]
-                logger.info(f"User {user_id} left session {session_id}")
-                # Broadcast offline presence within the session they left
-                await self.broadcast_presence(user_id, session_id, is_online=False)
-            del self.user_session_map[user_id]
-
-    def disconnect(self, user_id: str):
-        # When a user disconnects entirely, ensure they leave their current session
-        # Leave_session handles broadcast within the session
-        # Need to run leave_session in an async context if called synchronously
-        # For simplicity, we call this from the async WebSocket endpoint handler
-        logger.info(f"Initiating disconnect process for user {user_id}")
-        # The actual removal and broadcast happen in leave_session
-        # which should be called from the async disconnect handler.
-        pass # Logic moved to leave_session, called by endpoint handler
-
-    async def send_personal_message(self, message: str, user_id: str):
-        # Find the user's session and websocket
-        if user_id in self.user_session_map:
-            session_id = self.user_session_map[user_id]
-            if session_id in self.session_connections and user_id in self.session_connections[session_id]:
-                websocket = self.session_connections[session_id][user_id]
-                try:
-                    await websocket.send_text(message)
-                except Exception as e:
-                    logger.error(f"Error sending personal message to user {user_id} in session {session_id}: {e}")
-                    # Consider triggering disconnect flow
-            else:
-                 logger.warning(f"User {user_id} found in map but not in session {session_id} connections during personal send.")
-        else:
-             logger.warning(f"User {user_id} not found in user_session_map during personal send.")
-             
-    async def broadcast_to_session(self, message: str, session_id: str, sender_user_id: Optional[str] = None):
-        """Broadcasts a message to all users in a specific session, optionally excluding the sender."""
-        if session_id in self.session_connections:
-            disconnected_users = []
-            # Create a copy of user IDs to iterate over, in case of disconnections during broadcast
-            user_ids_in_session = list(self.session_connections[session_id].keys())
-            
-            for user_id in user_ids_in_session:
-                if user_id == sender_user_id:
-                    continue # Skip sender
-                    
-                websocket = self.session_connections[session_id].get(user_id)
-                if websocket:
-                    try:
-                        await websocket.send_text(message)
-                    except Exception as e:
-                        logger.error(f"Error broadcasting to user {user_id} in session {session_id}: {e}. Marking for disconnect.")
-                        # Mark user for disconnection *after* the loop
-                        disconnected_users.append(user_id)
-                else:
-                    # Should not happen if user_ids_in_session is from keys(), but good practice
-                    logger.warning(f"WebSocket not found for user {user_id} in session {session_id} during broadcast.")
-                    disconnected_users.append(user_id)
-            
-            # Clean up disconnected users after broadcast
-            for user_id in disconnected_users:
-                 await self.leave_session(user_id) # leave_session handles presence broadcast
-        else:
-            logger.debug(f"Attempted broadcast to non-existent or empty session {session_id}")
-
-    # Presence broadcast now needs session context
-    async def broadcast_presence(self, user_id: str, session_id: str, is_online: bool):
-        presence_message = json.dumps({"type": "presence", "user_id": user_id, "online": is_online})
-        # Broadcast presence only within the relevant session, excluding the user themselves
-        await self.broadcast_to_session(presence_message, session_id, sender_user_id=user_id)
-
-manager = ConnectionManager()
-
-# WebSocket Endpoint
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
-    """WebSocket endpoint requiring token query parameter and session joining."""
-    if not token:
-        logger.warning("WebSocket connection attempt without token.")
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    user = await get_user_from_token(token)
-    
-    if not user:
-        logger.warning(f"WebSocket connection attempt with invalid token: {token[:10]}...")
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-        
-    user_id = user.id
-    await manager.connect(websocket, user_id) # Connects, sends "connected" message
-    
-    current_session_id: Optional[str] = None
-    
+# --- NEW STREAMING ENDPOINT ---        
+async def stream_chat_generator(
+    history_json: str, 
+    purpose: str, 
+    user: User, 
+    model_id: Optional[str] = None,
+    session_id: Optional[str] = None
+):
+    current_session_id = session_id or str(uuid.uuid4())
+    response_buffer = "" # Used only for successful GPT stream final save
+    message_saved = False # Flag to track if a final message (success or error) has been saved
+    model_used = "unknown"
     try:
-        # First message must be 'join_session'
-        join_data_raw = await websocket.receive_text()
+        logger.info(f"Starting chat stream for user {user.username}, session {current_session_id}")
         try:
-            join_data = json.loads(join_data_raw)
-            if join_data.get("type") == "join_session" and "session_id" in join_data:
-                session_id_to_join = join_data["session_id"]
-                await manager.join_session(websocket, user_id, session_id_to_join)
-                current_session_id = session_id_to_join
-                # Confirm successful join to client
-                await websocket.send_text(json.dumps({"type": "session_joined", "session_id": current_session_id}))
-            else:
-                logger.warning(f"User {user_id} sent invalid first message: {join_data_raw}")
-                await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="First message must be type join_session with session_id")
-                # Need to clean up the initial connection without session
-                # Since connect() doesn't add to map, just logging is needed maybe?
-                # No session to leave here.
-                return # Exit the handler
-        except json.JSONDecodeError:
-            logger.warning(f"User {user_id} sent invalid JSON as first message: {join_data_raw}")
-            await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA, reason="Invalid JSON")
+            history = json.loads(history_json)
+            if not isinstance(history, list) or not history:
+                raise ValueError("History must be a non-empty list")
+            openai_messages = []
+            for msg in history:
+                 if isinstance(msg, dict) and 'role' in msg and 'content' in msg:
+                     openai_messages.append(msg)
+                 else:
+                     logger.warning(f"Skipping invalid message format in history: {msg}")
+            if not openai_messages:
+                 raise ValueError("History is empty after parsing invalid messages.")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Invalid history: {e}")
+            yield f'data: {{"error": "Invalid history format: {e}"}}\n\n'
             return
-
-        # Main message loop after joining session
-        while True:
-            data = await websocket.receive_text()
-            # Ensure current_session_id is set, although it should be after successful join
-            if not current_session_id:
-                 logger.error(f"User {user_id} is in message loop but has no current_session_id. This should not happen.")
-                 await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Internal state error")
-                 break # Exit loop
-                 
-            logger.info(f"Received WS message from {user_id} ({user.username}) in session {current_session_id}: {data}")
-
-            # Handle subsequent messages (typing, read receipts, etc.)
+            
+        # Save user message from history
+        if openai_messages[-1]['role'] == 'user':
             try:
-                message_data = json.loads(data)
-                message_type = message_data.get("type")
-
-                if message_type == "typing":
-                    # Session ID should ideally match current_session_id, but use message's for safety?
-                    # Let's assume typing applies to the session the user is *currently* in.
-                    is_typing = message_data.get("is_typing", False)
-                    typing_message = json.dumps({
-                        "type": "typing", 
-                        "user_id": user_id, 
-                        "username": user.username, 
-                        "session_id": current_session_id, 
-                        "is_typing": is_typing
-                    })
-                    await manager.broadcast_to_session(typing_message, current_session_id, sender_user_id=user_id)
-                
-                elif message_type == "read_receipt":
-                     last_read_message_id = message_data.get("last_read_message_id")
-                     if last_read_message_id:
-                         read_receipt_message = json.dumps({
-                            "type": "read_receipt",
-                            "user_id": user_id,
-                            "username": user.username,
-                            "session_id": current_session_id,
-                            "last_read_message_id": last_read_message_id
-                         })
-                         await manager.broadcast_to_session(read_receipt_message, current_session_id, sender_user_id=user_id)
-                     else:
-                        logger.warning(f"Read receipt received without last_read_message_id from {user_id}")
-                
-                elif message_type == "leave_session": # Allow explicit leaving
-                    logger.info(f"User {user_id} explicitly leaving session {current_session_id}")
-                    await manager.leave_session(user_id)
-                    current_session_id = None # Clear current session
-                    await websocket.send_text(json.dumps({"type": "session_left"}))
-                    # Client might send join_session again or disconnect
-                    # Let's break the inner loop and wait for potential join_session or disconnect
-                    # Or simply disconnect them? For now, let them linger until disconnect/rejoin.
-                    # We could add logic here to wait for join_session again.
-                    # Safest might be to close if they don't rejoin quickly.
-                    # Let's just break and rely on disconnect/timeout for now.
-                    pass # Continue outer loop, expecting potential rejoin or disconnect
-                    
-                # Handle other message types if needed
-
-            except json.JSONDecodeError:
-                logger.warning(f"Received invalid JSON via WS from {user_id} in session {current_session_id}: {data}")
+                # NOTE: Attachments not handled here yet
+                save_chat_message(
+                    user_id=user.id,
+                    session_id=current_session_id,
+                    role="user",
+                    content=openai_messages[-1]['content']
+                )
+                message_saved = True # Consider user message saved successfully
             except Exception as e:
-                logger.error(f"Error processing WS message from {user_id} in session {current_session_id}: {e}")
-                # Consider sending an error message back to the user
+                logger.exception("Stream: Error saving user message")
+                # Continue stream even if user message save fails?
+        else:
+             logger.warning("Stream: Last message in history was not from user.")
 
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected handler for user {user_id} ({user.username}) from session {current_session_id}")
-        # Ensure user leaves the session if they were in one
-        if current_session_id: # Check if user successfully joined a session
-            await manager.leave_session(user_id)
-        
-    except Exception as e:
-        logger.error(f"Unexpected error in WebSocket for user {user_id} ({user.username}) in session {current_session_id}: {e}")
-        logger.error(traceback.format_exc())
-        # Ensure user leaves the session if they were in one
-        if current_session_id: # Check if user successfully joined a session
-             await manager.leave_session(user_id)
-        # Ensure the connection is closed from the server side
-        try:
-            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
-        except Exception as close_err:
-            logger.error(f"Error closing websocket for user {user_id} after error: {close_err}")
-
-# Chat Attachment/Upload Endpoints
-@app.post("/api/chat/upload", response_model=FileUploadResponse)
-async def upload_chat_file(
-    file: UploadFile = File(...), 
-    current_user: User = Depends(get_current_user)
-):
-    """Handles chat file uploads. Stores file temporarily and returns an ID."""
-    if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No filename provided.")
-
-    # Generate a unique filename using UUID (without extension for the ID)
-    temp_file_id = str(uuid.uuid4())
-    file_ext = os.path.splitext(file.filename)[1]
-    # Store with extension, but the ID returned is just the UUID part
-    safe_filename_with_ext = f"{temp_file_id}{file_ext}" 
-    file_path = os.path.join(CHAT_UPLOAD_DIR, safe_filename_with_ext)
-
-    try:
-        file_size = 0
-        # Save the file asynchronously
-        async with aiofiles.open(file_path, 'wb') as out_file:
-            while content := await file.read(1024 * 1024):  # Read in 1MB chunks
-                await out_file.write(content)
-                file_size += len(content)
-        
-        mimetype = file.content_type or "application/octet-stream"
-        logger.info(f"User {current_user.username} uploaded file '{file.filename}' as {safe_filename_with_ext} ({file_size} bytes), Temp ID: {temp_file_id}")
-
-        return FileUploadResponse(
-            temp_file_id=temp_file_id, # Return only the UUID part as the ID
-            original_filename=file.filename,
-            mimetype=mimetype,
-            filesize=file_size
-        )
-
-    except Exception as e:
-        logger.error(f"Failed to upload file {file.filename} for user {current_user.username}: {e}")
-        if os.path.exists(file_path):
+        # --- Streaming Logic --- 
+        if model_id:
+            # Simulate streaming for assistants - calls chat_with_custom_model which saves messages
+            logger.info(f"Streaming (simulated) for custom model: {model_id}")
             try:
-                os.remove(file_path)
-            except OSError as rm_err:
-                logger.error(f"Error cleaning up failed upload {file_path}: {rm_err}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not save uploaded file.")
+                 chat_request = ChatRequest(
+                     messages=[ChatMessage(**msg) for msg in openai_messages],
+                     purpose=purpose,
+                     model_id=model_id,
+                     session_id=current_session_id
+                 )
+                 custom_model_response = await chat_with_custom_model(chat_request, user, current_session_id)
+                 response_content = str(custom_model_response.get("message", "")) # Ensure string
+                 model_used = custom_model_response.get("model_used", f"custom:{model_id}")
+                 message_saved = True # chat_with_custom_model saved it
 
-@app.get("/api/chat/attachments/{attachment_id}")
-async def download_chat_attachment(
-    attachment_id: str,
-    current_user: User = Depends(get_current_user)
-):
-    """Allows downloading a specific chat attachment, verifying user access."""
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            # Find attachment and the user associated with its message
-            cursor.execute("""
-                SELECT ca.filepath, ca.filename, ca.mimetype, cm.user_id
-                FROM chat_attachments ca
-                JOIN chat_messages cm ON ca.message_id = cm.id
-                WHERE ca.id = ?
-            """, (attachment_id,))
-            attachment_data = cursor.fetchone()
+                 # Yield the full response as one chunk
+                 if response_content: # Only yield if there is content
+                      chunk_data = {"chunk": response_content}
+                      yield f"data: {json.dumps(chunk_data)}\n\n"
+                 
+            except Exception as assistant_error:
+                logger.exception(f"Error during custom model (assistant) chat stream for {model_id}")
+                error_msg = f"Error with custom model: {assistant_error}"
+                error_data = {"error": error_msg}
+                yield f"data: {json.dumps(error_data)}\n\n"
+                # chat_with_custom_model should have saved the error message, so set flag
+                message_saved = True 
 
-            if not attachment_data:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+        else:
+            # Actual streaming for default GPT model
+            model_name = "gpt-4o-mini"
+            logger.info(f"Streaming with default model: {model_name}")
+            model_used = model_name
+            temp_response_buffer = ""
+            try:
+                stream = client.chat.completions.create(
+                    model=model_name,
+                    messages=openai_messages,
+                    stream=True
+                )
+                for chunk in stream:
+                    content = chunk.choices[0].delta.content
+                    if content is not None:
+                        chunk_data = {"chunk": content}
+                        yield f"data: {json.dumps(chunk_data)}\n\n"
+                        temp_response_buffer += content 
+                        await asyncio.sleep(0.01)
+                response_buffer = temp_response_buffer # Keep final response for saving
+            except Exception as gpt_error:
+                 logger.exception("Error during OpenAI stream")
+                 error_msg = f"Error communicating with AI model: {gpt_error}"
+                 error_data = {"error": error_msg}
+                 yield f"data: {json.dumps(error_data)}\n\n"
+                 # Save error message immediately
+                 save_chat_message(
+                    user_id=user.id, session_id=current_session_id, role="assistant",
+                    content=error_msg, model_used=f"{model_name}-error"
+                 )
+                 message_saved = True
 
-            # Verify the current user is the owner of the message this attachment belongs to
-            if attachment_data["user_id"] != current_user.id:
-                # Add more sophisticated access control later if needed (e.g., shared sessions)
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to access this attachment")
-
-            file_path = attachment_data["filepath"]
-            original_filename = attachment_data["filename"]
-            mimetype = attachment_data["mimetype"]
-
-            if not os.path.exists(file_path):
-                logger.error(f"Attachment file not found on disk: {file_path} (Attachment ID: {attachment_id})")
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment file not found on server")
-
-            # Return the file as a response
-            return FileResponse(
-                path=file_path, 
-                filename=original_filename, 
-                media_type=mimetype
-            )
-
-    except HTTPException:
-        raise # Re-raise HTTP exceptions
+        # --- Stream End --- 
+        yield f'data: {{"done": true}}\n\n'
+        logger.info(f"Chat stream finished for session {current_session_id}")
+        
     except Exception as e:
-        logger.error(f"Error downloading attachment {attachment_id} for user {current_user.username}: {e}")
-        raise HTTPException(status_code=500, detail="Could not download attachment")
+        # Catch-all for unexpected errors in the generator itself
+        logger.exception(f"Unexpected error during stream_chat_generator for session {current_session_id}")
+        try:
+            error_msg = f"An unexpected server error occurred: {e}"
+            error_data = {"error": error_msg}
+            yield f"data: {json.dumps(error_data)}\n\n"
+            # Save error message if no other message was saved
+            if not message_saved:
+                save_chat_message(
+                    user_id=user.id, session_id=current_session_id, role="assistant",
+                    content=error_msg, model_used="generator-error"
+                )
+                message_saved = True
+        except Exception as final_error:
+            logger.error(f"CRITICAL: Failed to yield/save final error to stream: {final_error}")
+            
+    finally:
+        # Save the final assistant message ONLY if it was a successful GPT stream 
+        # AND hasn't already been saved due to an error.
+        if response_buffer and not message_saved: 
+            try:
+                 save_chat_message(
+                    user_id=user.id, 
+                    session_id=current_session_id,
+                    role="assistant",
+                    content=response_buffer, # Content accumulated during successful stream
+                    model_used=model_used
+                 )
+            except Exception as save_error:
+                 logger.exception(f"Stream: Failed to save final assistant message for session {current_session_id}")
+        elif not message_saved:
+             # Log warning if no message (success or error) was saved during the stream
+             logger.warning(f"Stream: No final message was saved for session {current_session_id}")
+
+@app.get("/api/chat_stream")
+async def chat_stream(
+    token: str, # Get token from query param
+    history: str, # History as JSON string from query param
+    purpose: str, # Purpose from query param
+    model_id: Optional[str] = None, # Optional model_id
+    session_id: Optional[str] = None # Optional session_id
+): # Removed Depends(get_current_user) - auth handled manually
+    """Endpoint for streaming chat responses using SSE."""
+    logger.debug(f"Received chat stream request. Token: {token[:10] if token else 'None'}...")
+    user = await get_user_from_token(token)
+    if not user:
+        # Cannot easily return 401 for SSE, client needs to handle error message
+        # Returning an error response *within* the stream format
+        async def unauthorized_stream():
+            yield f'data: {{"error": "Authentication required or invalid token."}}\n\n'
+        return StreamingResponse(unauthorized_stream(), media_type="text/event-stream")
+    
+    logger.info(f"Authenticated stream request for user: {user.username}")
+    
+    # Return the streaming response using the generator
+    return StreamingResponse(
+        stream_chat_generator(history, purpose, user, model_id, session_id),
+        media_type="text/event-stream"
+    )
 
 # General Endpoints (Root, Chat)
 if __name__ == "__main__":
