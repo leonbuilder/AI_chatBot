@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Box, Paper, Typography, CircularProgress, Avatar, IconButton, Tooltip } from '@mui/material';
-import { PersonOutline, AssistantOutlined, Replay, ContentCopy } from '@mui/icons-material';
+import { Box, Paper, Typography, CircularProgress, Avatar, IconButton, Tooltip, TextField } from '@mui/material';
+import { PersonOutline, AssistantOutlined, Replay, ContentCopy, Edit, Check, Close, AutoAwesome } from '@mui/icons-material';
 import { Message } from '../types'; // Import the Message type
 import { format } from 'date-fns'; // Import date formatting library
 import ReactMarkdown from 'react-markdown';
@@ -38,13 +38,27 @@ interface ChatMessageListProps {
     onRegenerate: (messageId: string) => void; // Callback for regeneration
     onCopy: (content: string) => void; // Callback for copy
     messagesEndRef: React.RefObject<HTMLDivElement>; // Ref for auto-scrolling
+    onEditMessage?: (messageId: string, newContent: string, isEnteringEditMode?: boolean) => Promise<void>; // Added isEnteringEditMode parameter
 }
 
-const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, onRegenerate, onCopy, messagesEndRef }) => {
+const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, onRegenerate, onCopy, messagesEndRef, onEditMessage }) => {
     const [showSnackbar, setShowSnackbar] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState('');
+    const [editInput, setEditInput] = useState(''); // State for edit input field
 
     console.log('Messages in ChatMessageList:', messages.map(msg => ({ id: msg.id, role: msg.role })));
+
+    // Handle starting edit mode
+    const handleStartEdit = (message: Message) => {
+        setEditInput(message.content);
+    };
+
+    // Handle saving edit
+    const handleSaveEdit = async (messageId: string) => {
+        if (onEditMessage) {
+            await onEditMessage(messageId, editInput);
+        }
+    };
 
     // Custom renderer for code blocks
     const CodeRenderer = ({ node, inline, className, children, ...props }: any) => {
@@ -159,10 +173,71 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                                 <Typography variant="caption" sx={{ color: isUser ? 'primary.contrastText' : 'text.secondary' }}>
                                      {message.timestamp ? format(new Date(message.timestamp), 'p') : 'Sending...'}
                                  </Typography>
+                                 {message.edited_at && !isUser && (
+                                     <Box component="span" sx={{ display: 'inline-flex', ml: 1 }}>
+                                         <Tooltip title="Response regenerated from edited message">
+                                             <AutoAwesome fontSize="small" sx={{ color: 'secondary.main' }} />
+                                         </Tooltip>
+                                     </Box>
+                                 )}
+                                 {message.edited_at && isUser && (
+                                     <Typography variant="caption" sx={{ ml: 1, color: isUser ? 'primary.contrastText' : 'text.secondary', fontStyle: 'italic' }}>
+                                         (edited)
+                                     </Typography>
+                                 )}
                              </Box>
-                             <ReactMarkdown components={components}>
-                                {message.content}
-                            </ReactMarkdown>
+
+                             {message.isEditing ? (
+                                // Edit mode - show text field and save/cancel buttons
+                                <Box sx={{ mt: 1 }}>
+                                    <TextField
+                                        fullWidth
+                                        multiline
+                                        value={editInput}
+                                        onChange={(e) => setEditInput(e.target.value)}
+                                        variant="outlined"
+                                        size="small"
+                                        sx={{
+                                            '& .MuiOutlinedInput-root': {
+                                                color: isUser ? 'primary.contrastText' : 'text.primary',
+                                                '& fieldset': {
+                                                    borderColor: isUser ? 'rgba(255, 255, 255, 0.5)' : 'rgba(0, 0, 0, 0.23)',
+                                                },
+                                                '&:hover fieldset': {
+                                                    borderColor: isUser ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.5)',
+                                                },
+                                            },
+                                        }}
+                                    />
+                                    <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1 }}>
+                                        <IconButton 
+                                            size="small" 
+                                            onClick={() => handleSaveEdit(message.id)}
+                                            sx={{ color: isUser ? 'primary.contrastText' : 'success.main' }}
+                                        >
+                                            <Check fontSize="small" />
+                                        </IconButton>
+                                        <IconButton 
+                                            size="small"
+                                            onClick={() => {
+                                                // Just flip the isEditing flag back to false via the onEditMessage callback
+                                                if (onEditMessage) {
+                                                    onEditMessage(message.id, message.content);
+                                                }
+                                            }}
+                                            sx={{ ml: 1, color: isUser ? 'primary.contrastText' : 'error.main' }}
+                                        >
+                                            <Close fontSize="small" />
+                                        </IconButton>
+                                    </Box>
+                                </Box>
+                             ) : (
+                                // Normal display mode
+                                <ReactMarkdown components={components}>
+                                    {message.content}
+                                </ReactMarkdown>
+                             )}
+                            
                             {/* Attachments Display */}
                             {message.attachments && message.attachments.length > 0 && (
                                 <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 1 }}>
@@ -185,9 +260,23 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                             {message.error && <Typography color="error" variant="caption"> {message.error}</Typography>}
 
                            {/* Action Buttons - Placed at the bottom right */}
-                            {!isUser && !message.isStreaming && (
+                            {!message.isEditing && (
                                 <Box sx={{ position: 'absolute', bottom: 4, right: 4, display: 'flex', gap: 0.5 }}>
-                                    {index === lastAssistantMessageIndex && (
+                                    {isUser && onEditMessage && (
+                                        <Tooltip title="Edit Message">
+                                            <IconButton 
+                                                size="small" 
+                                                onClick={() => {
+                                                    handleStartEdit(message);
+                                                    onEditMessage(message.id, message.content, true); // Pass true to indicate entering edit mode
+                                                }} 
+                                                color="inherit"
+                                            >
+                                                <Edit fontSize="inherit" />
+                                            </IconButton>
+                                        </Tooltip>
+                                    )}
+                                    {!isUser && !message.isStreaming && index === lastAssistantMessageIndex && (
                                         <Tooltip title="Regenerate Response">
                                             <IconButton size="small" onClick={() => onRegenerate(message.id)} color="inherit">
                                                 <Replay fontSize="inherit" />

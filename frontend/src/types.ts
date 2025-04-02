@@ -6,6 +6,9 @@ export interface Message {
   isStreaming?: boolean;
   error?: string;
   attachments?: AttachmentInfo[];
+  edited_at?: Date;  // Timestamp when message was last edited
+  isEditing?: boolean; // Flag to indicate if the message is currently being edited
+  isRegenerated?: boolean; // Flag to indicate if this is a regenerated response after an edit
 }
 
 // Define AttachmentInfo based on backend structure

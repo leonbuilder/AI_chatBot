@@ -1780,3 +1780,188 @@ async def debug_session_messages(
     except Exception as e:
         logger.error(f"Debug endpoint error: {e}", exc_info=True)
         return {"error": str(e)} 
+
+# --- Chat Message Editing Endpoint ---
+@app.patch("/api/chat_messages/{message_id}", response_model=ChatMessageHistory)
+async def update_chat_message(
+    message_id: str,
+    update_data: ChatMessageUpdate,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Update a chat message (only user can edit their own messages).
+    Currently only supports editing the content.
+    """
+    logger.info(f"Request to update message {message_id} by user {current_user.username}")
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # First check if the message exists and belongs to the current user
+            cursor.execute(
+                "SELECT * FROM chat_messages WHERE id = ? AND user_id = ? AND role = 'user' AND is_deleted = FALSE",
+                (message_id, current_user.id)
+            )
+            message = cursor.fetchone()
+            
+            if not message:
+                logger.warning(f"Message {message_id} not found or user {current_user.username} doesn't have permission to edit it")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Message not found or you don't have permission to edit it"
+                )
+            
+            # Log update data
+            logger.debug(f"Updating message {message_id} with content: {update_data.content[:50]}...")
+            
+            # Update the message content and set edited_at timestamp
+            now_iso = datetime.now(timezone.utc).isoformat()
+            cursor.execute(
+                """
+                UPDATE chat_messages 
+                SET content = ?, edited_at = ?
+                WHERE id = ?
+                """,
+                (update_data.content, now_iso, message_id)
+            )
+            conn.commit()
+            
+            # Fetch the updated message to return
+            cursor.execute("SELECT * FROM chat_messages WHERE id = ?", (message_id,))
+            updated_message = cursor.fetchone()
+            logger.debug(f"Updated message: {dict(updated_message) if updated_message else None}")
+            
+            # Get any attachments for this message
+            cursor.execute(
+                """
+                SELECT id, filename, filesize, mimetype 
+                FROM chat_attachments 
+                WHERE message_id = ?
+                """, 
+                (message_id,)
+            )
+            attachments_data = cursor.fetchall()
+            logger.debug(f"Found {len(attachments_data)} attachments for message {message_id}")
+            
+            attachments = []
+            for att in attachments_data:
+                logger.debug(f"Processing attachment: {dict(att)}")
+                try:
+                    # Use the same download URL format as used elsewhere in the application
+                    attachments.append(AttachmentInfo(
+                        id=att["id"],
+                        filename=att["filename"],
+                        filesize=att["filesize"],
+                        mimetype=att["mimetype"],
+                        download_url=f"/api/chat/attachments/{att['id']}"
+                    ))
+                except Exception as att_error:
+                    logger.error(f"Error processing attachment {att['id']}: {att_error}")
+            
+            # Convert to response model with better error handling
+            try:
+                logger.debug(f"Creating response object with timestamp: {updated_message['timestamp']} and edited_at: {updated_message['edited_at']}")
+                
+                # Handle the case where edited_at might be None initially
+                edited_at_value = None
+                if updated_message["edited_at"]:
+                    try:
+                        edited_at_value = datetime.fromisoformat(updated_message["edited_at"])
+                    except Exception as dt_error:
+                        logger.error(f"Error parsing edited_at timestamp: {dt_error}")
+                
+                response = ChatMessageHistory(
+                    id=updated_message["id"],
+                    role=updated_message["role"],
+                    content=updated_message["content"],
+                    timestamp=datetime.fromisoformat(updated_message["timestamp"]),
+                    model_used=updated_message.get("model_used"),
+                    edited_at=edited_at_value,
+                    is_deleted=bool(updated_message["is_deleted"]),
+                    attachments=attachments
+                )
+                return response
+            except Exception as resp_error:
+                logger.error(f"Error creating response object: {resp_error}", exc_info=True)
+                
+                # Return a simplified dict response as fallback
+                return {
+                    "id": updated_message["id"],
+                    "role": updated_message["role"],
+                    "content": updated_message["content"],
+                    "timestamp": updated_message["timestamp"],
+                    "edited_at": updated_message["edited_at"],
+                    "is_deleted": bool(updated_message["is_deleted"]),
+                    "attachments": []
+                }
+            
+    except Exception as e:
+        logger.exception(f"Error updating message: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update message: {str(e)}")
+
+# --- End Chat Message Editing Endpoint ---
+
+# --- Attachment Download Endpoint ---
+@app.get("/api/chat/attachments/{attachment_id}")
+async def download_attachment(
+    attachment_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Download a chat message attachment by ID.
+    Only the user who owns the message can download its attachments.
+    """
+    logger.info(f"Request to download attachment {attachment_id} by user {current_user.username}")
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get attachment info - join with chat_messages to verify ownership
+            cursor.execute("""
+                SELECT a.*, m.user_id, m.session_id
+                FROM chat_attachments a
+                JOIN chat_messages m ON a.message_id = m.id
+                WHERE a.id = ?
+            """, (attachment_id,))
+            attachment = cursor.fetchone()
+            
+            if not attachment:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Attachment not found"
+                )
+            
+            # Check if the user has access to this attachment
+            if attachment["user_id"] != current_user.id:
+                logger.warning(f"User {current_user.username} attempted to access attachment {attachment_id} owned by user {attachment['user_id']}")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You don't have permission to access this attachment"
+                )
+            
+            # Check if the file exists
+            filepath = attachment["filepath"]
+            if not os.path.exists(filepath):
+                logger.error(f"Attachment file not found: {filepath}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Attachment file not found"
+                )
+            
+            # Return the file as a response
+            return FileResponse(
+                path=filepath,
+                filename=attachment["filename"],
+                media_type=attachment["mimetype"]
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error downloading attachment: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download attachment: {str(e)}"
+        )
+
+# --- End Attachment Download Endpoint ---

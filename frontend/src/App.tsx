@@ -376,16 +376,18 @@ function App() {
     currentEventSource?.close(); 
     setCurrentEventSource(null);
 
+    // Use a temporary ID for display purposes only
+    const tempUserMessageId = `temp-user-${Date.now()}`;
     const userMessage: Message = {
-      id: `user-${Date.now()}`,
+      id: tempUserMessageId, // This will be replaced with the real ID from the server
       role: 'user',
       content: messageContent,
       timestamp: new Date(),
     };
 
-    const streamingAssistantMessageId = `assistant-${Date.now()}`;
+    const streamingAssistantMessageId = `temp-assistant-${Date.now()}`;
     const assistantMessagePlaceholder: Message = {
-      id: streamingAssistantMessageId,
+      id: streamingAssistantMessageId, // This will be replaced with the real ID from the server
       role: 'assistant',
       content: '',
       timestamp: new Date(),
@@ -458,19 +460,19 @@ function App() {
                   };
                   setSessions(prev => [newSessionInfo, ...prev]); // Add to top
 
-                  // After creating a new session, trigger title generation after a short delay
+                  // After creating a new session, fetch the actual messages with server IDs
                   setTimeout(() => {
-                    // Get the final messages including the new assistant response
-                    setMessages(currentMessages => {
-                      // Generate a title based on the current conversation
+                    if (completedSessionId) {
+                      fetchMessagesForSession(completedSessionId);
+                      // Then generate a title based on the conversation
                       generateSessionTitle(completedSessionId, currentMessages);
-                      return currentMessages;
-                    });
-                  }, 500); // Small delay to ensure the messages array includes the assistant response
+                    }
+                  }, 500);
               } else if (!errorOccurred && activeSessionId) {
-                 // Existing session finished, refresh list to update timestamp/order
-                 console.log("Stream done for existing session. Refreshing session list.");
-                  fetchSessions(); 
+                 // Existing session finished, refresh messages to get server IDs and refresh session list
+                 console.log("Stream done for existing session. Refreshing session list and messages.");
+                 fetchMessagesForSession(activeSessionId);
+                 fetchSessions(); 
               }
               
              // Now close EventSource
@@ -495,13 +497,20 @@ function App() {
         es.close(); // Close on error
         setCurrentEventSource(null);
     };
-  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar, generateSessionTitle]);
+  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar, generateSessionTitle, fetchMessagesForSession]);
   
-  const handleRegenerate = useCallback((messageIdToRegenerate: string) => {
+  const handleRegenerate = useCallback((messageIdToRegenerate: string, isAfterEdit = false) => {
     if (!isLoggedIn || !activeSessionId) {
         showSnackbar("Cannot regenerate without an active chat session.", "warning");
         return;
     }
+    
+    // Skip regeneration for temporary IDs
+    if (messageIdToRegenerate.startsWith('temp-')) {
+        showSnackbar('Cannot regenerate messages that have not been saved to the server yet', 'warning');
+        return;
+    }
+    
     const messageIndex = messages.findIndex(msg => msg.id === messageIdToRegenerate);
     if (messageIndex <= 0 || messages[messageIndex].role !== 'assistant' || messages[messageIndex].isStreaming) {
         console.error("Cannot regenerate this message:", messageIdToRegenerate, messages[messageIndex]);
@@ -512,9 +521,14 @@ function App() {
     currentEventSource?.close(); 
     setCurrentEventSource(null);
 
+    // Use edited message content for regeneration
     const historyForBackend = messages.slice(0, messageIndex).map(m => ({ role: m.role, content: m.content }));
     
-    const streamingAssistantMessageId = `assistant-${Date.now()}-regen`;
+    if (isAfterEdit) {
+      console.log("Regenerating response based on edited message");
+    }
+    
+    const streamingAssistantMessageId = `temp-assistant-${Date.now()}-regen`;
     const assistantMessagePlaceholder: Message = {
          id: streamingAssistantMessageId,
          role: 'assistant',
@@ -557,9 +571,22 @@ function App() {
                 setMessages((prev) => prev.map((msg) => msg.id === streamingAssistantMessageId ? { ...msg, content: `Error: ${parsedData.error}`, isStreaming: false, error: parsedData.error } : msg));
                 es.close(); setCurrentEventSource(null); errorOccurred = true;
             } else if (parsedData.done) {
-                setMessages((prev) => prev.map((msg) => msg.id === streamingAssistantMessageId ? { ...msg, isStreaming: false } : msg));
+                // When done, mark the regenerated message with edited_at for visual indicator
+                const now = new Date();
+                setMessages((prev) => prev.map((msg) => 
+                    msg.id === streamingAssistantMessageId 
+                        ? { 
+                            ...msg, 
+                            isStreaming: false, 
+                            edited_at: isAfterEdit ? now : undefined,
+                            isRegenerated: isAfterEdit
+                          } 
+                        : msg
+                ));
                 es.close(); setCurrentEventSource(null);
                 if (!errorOccurred) {
+                    // Refresh to get the server-generated message ID
+                    fetchMessagesForSession(activeSessionId);
                     fetchSessions();
                 }
             }
@@ -576,7 +603,7 @@ function App() {
        es.close(); setCurrentEventSource(null); errorOccurred = true;
     };
 
-  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar]);
+  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar, fetchMessagesForSession]);
   
   // Function to copy message content to clipboard
   const handleCopyMessageContent = useCallback((content: string) => {
@@ -584,6 +611,97 @@ function App() {
       .then(() => showSnackbar('Message content copied to clipboard', 'success'))
       .catch(() => showSnackbar('Failed to copy content', 'error'));
   }, [showSnackbar]);
+
+  // Function to handle message editing
+  const handleEditMessage = useCallback(async (messageId: string, newContent: string, isEnteringEditMode?: boolean) => {
+    // Skip editing for temporary IDs
+    if (messageId.startsWith('temp-')) {
+      showSnackbar('Cannot edit messages that have not been saved to the server yet', 'warning');
+      return;
+    }
+
+    // If isEnteringEditMode is true, we just want to switch to edit mode without saving
+    if (isEnteringEditMode) {
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
+          msg.id === messageId ? { ...msg, isEditing: true } : msg
+        )
+      );
+      return;
+    }
+
+    // Check if content actually changed (for cancel case we just flip back to non-editing mode)
+    const originalMessage = messages.find(msg => msg.id === messageId);
+    if (!originalMessage) return;
+
+    // If content didn't change, just exit edit mode
+    if (originalMessage.content === newContent) {
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
+          msg.id === messageId ? { ...msg, isEditing: false } : msg
+        )
+      );
+      return;
+    }
+
+    // Validate content - don't allow completely empty messages
+    if (!newContent.trim()) {
+      showSnackbar('Message cannot be empty', 'error');
+      return;
+    }
+
+    // Update optimistically first
+    setMessages(prevMessages => 
+      prevMessages.map(msg => 
+        msg.id === messageId 
+          ? { 
+              ...msg, 
+              content: newContent, 
+              isEditing: false,
+              edited_at: new Date() 
+            } 
+          : msg
+      )
+    );
+
+    try {
+      console.log(`Updating message with ID: ${messageId}`);
+      // Make API call to update the message
+      const response = await apiClient.patch(`/api/chat_messages/${messageId}`, { content: newContent });
+      console.log('Message update response:', response.data);
+      showSnackbar('Message updated successfully', 'success');
+      
+      // Find the next assistant message after this one to regenerate it
+      const messageIndex = messages.findIndex(msg => msg.id === messageId);
+      if (messageIndex >= 0 && messageIndex < messages.length - 1) {
+        const nextMessage = messages[messageIndex + 1];
+        if (nextMessage.role === 'assistant') {
+          // Small delay to let the UI update first
+          setTimeout(() => {
+            console.log(`Auto-regenerating AI response after user edit`);
+            handleRegenerate(nextMessage.id, true);
+          }, 300);
+        }
+      }
+    } catch (error) {
+      console.error('Error updating message:', error);
+      
+      // Extract detailed error message if available
+      let errorMessage = 'Failed to update message';
+      if (axios.isAxiosError(error) && error.response?.data?.detail) {
+        errorMessage = `Failed to update message: ${error.response.data.detail}`;
+      }
+      
+      showSnackbar(errorMessage, 'error');
+      
+      // Revert to original content on error
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
+          msg.id === messageId ? { ...originalMessage, isEditing: false } : msg
+        )
+      );
+    }
+  }, [messages, showSnackbar, handleRegenerate]);
 
   const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -997,6 +1115,7 @@ function App() {
               messagesEndRef={messagesEndRef}
               onRegenerate={handleRegenerate}
               onCopy={handleCopyMessageContent}
+              onEditMessage={handleEditMessage}
             />
 
             <Box sx={{ p: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1 }}>
