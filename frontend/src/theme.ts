@@ -50,16 +50,66 @@ const theme = createTheme({
     },
     // You can customize other variants (body1, button, caption, etc.)
   },
-  // You can also customize components globally
-  // components: {
-  //   MuiButton: {
-  //     styleOverrides: {
-  //       root: {
-  //         textTransform: 'none', // Example: disable uppercase buttons
-  //       },
-  //     },
-  //   },
-  // },
+  // Add global component style overrides
+  components: {
+    MuiButton: {
+      styleOverrides: {
+        // Apply to all button variants
+        root: {
+          textTransform: 'none', // Disable uppercase text
+          borderRadius: '8px', // Slightly rounder buttons
+        },
+        // Specific variant overrides
+        containedPrimary: {
+          boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)', // Subtle shadow
+          '&:hover': {
+            boxShadow: '0 3px 6px rgba(0,0,0,0.16), 0 3px 6px rgba(0,0,0,0.23)', // Slightly raise on hover
+          },
+        },
+        containedSecondary: {
+          boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)',
+          '&:hover': {
+            boxShadow: '0 3px 6px rgba(0,0,0,0.16), 0 3px 6px rgba(0,0,0,0.23)',
+          },
+        },
+        // Add styles for other variants (outlined, text) if needed
+      },
+    },
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          // Apply a default, very subtle shadow using theme shadows
+          // elevation={1} will map to shadows[1]
+        },
+      },
+      defaultProps: {
+        elevation: 1, // Set default elevation for Paper to 1 (subtle shadow)
+      }
+    },
+    MuiDialogTitle: {
+      styleOverrides: {
+        root: {
+          borderBottom: '1px solid #e0e0e0', // Add a divider below dialog titles
+          paddingBottom: '12px', 
+        },
+      },
+    },
+    MuiDialogActions: {
+      styleOverrides: {
+        root: {
+          borderTop: '1px solid #e0e0e0', // Add a divider above dialog actions
+          paddingTop: '12px',
+        },
+      },
+    },
+    // Example: Override TextField
+    // MuiTextField: {
+    //   defaultProps: {
+    //     variant: 'outlined', // Default to outlined variant
+    //     size: 'small',       // Default to small size
+    //   },
+    // },
+  },
 });
 
 export default theme; 
