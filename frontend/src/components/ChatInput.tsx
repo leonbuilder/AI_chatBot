@@ -1,6 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { TextField, IconButton, Box, Paper, useTheme, List, ListItem, ListItemButton, Typography, CircularProgress } from '@mui/material';
+import { 
+  TextField, 
+  IconButton, 
+  Box, 
+  Paper, 
+  useTheme, 
+  List, 
+  ListItem, 
+  ListItemButton, 
+  Typography, 
+  CircularProgress,
+  Chip,
+  Tooltip,
+  Collapse,
+  Button
+} from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import SendIcon from '@mui/icons-material/Send';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates';
 import axios from 'axios';
 import { API_BASE_URL } from '../constants';
 
@@ -8,6 +26,7 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   loading: boolean;
   showSuggestions?: boolean; // Whether to show auto-suggestions
+  enablePromptImprovement?: boolean; // Whether to enable prompt improvement assistance
 }
 
 // Create an axios instance with auth header
@@ -30,7 +49,17 @@ apiClient.interceptors.request.use(
   }
 );
 
-const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions = true }) => {
+interface PromptImprovement {
+  suggestions: string[];
+  improved_prompt: string;
+}
+
+const ChatInput: React.FC<ChatInputProps> = ({ 
+  onSend, 
+  loading, 
+  showSuggestions = true,
+  enablePromptImprovement = false
+}) => {
   const theme = useTheme();
   const [input, setInput] = useState('');
   const [rows, setRows] = useState(1);
@@ -39,6 +68,12 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const textFieldRef = useRef<HTMLTextAreaElement>(null);
   const debounceTimeout = useRef<NodeJS.Timeout | null>(null);
+  
+  // Prompt improvement state
+  const [promptImprovement, setPromptImprovement] = useState<PromptImprovement | null>(null);
+  const [loadingImprovement, setLoadingImprovement] = useState(false);
+  const [showImprovementPanel, setShowImprovementPanel] = useState(false);
+  const improvementDebounceTimeout = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch AI-powered suggestions when input changes
   useEffect(() => {
@@ -85,6 +120,57 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
       }
     };
   }, [input, showSuggestions]);
+  
+  // Fetch prompt improvements when input changes
+  useEffect(() => {
+    const fetchPromptImprovement = async (promptText: string) => {
+      if (!enablePromptImprovement || promptText.length < 10) {
+        setPromptImprovement(null);
+        setShowImprovementPanel(false);
+        return;
+      }
+
+      try {
+        setLoadingImprovement(true);
+        const response = await apiClient.post('/api/improve-prompt', { prompt: promptText });
+        
+        if (response.data.suggestions && response.data.suggestions.length > 0) {
+          setPromptImprovement(response.data);
+          setShowImprovementPanel(true);
+        } else {
+          setPromptImprovement(null);
+          setShowImprovementPanel(false);
+        }
+      } catch (error) {
+        console.error('Error fetching prompt improvements:', error);
+        setPromptImprovement(null);
+        setShowImprovementPanel(false);
+      } finally {
+        setLoadingImprovement(false);
+      }
+    };
+
+    // Debounce the prompt improvement API calls
+    if (improvementDebounceTimeout.current) {
+      clearTimeout(improvementDebounceTimeout.current);
+    }
+
+    improvementDebounceTimeout.current = setTimeout(() => {
+      if (input.trim()) {
+        fetchPromptImprovement(input);
+      } else {
+        setPromptImprovement(null);
+        setShowImprovementPanel(false);
+      }
+    }, 1000); // 1000ms debounce for improvement analysis
+
+    // Cleanup function
+    return () => {
+      if (improvementDebounceTimeout.current) {
+        clearTimeout(improvementDebounceTimeout.current);
+      }
+    };
+  }, [input, enablePromptImprovement]);
 
   // Auto-resize the input field based on content
   useEffect(() => {
@@ -110,6 +196,8 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
     setInput('');
     setRows(1);
     setShowSuggestionsList(false);
+    setShowImprovementPanel(false);
+    setPromptImprovement(null);
   };
 
   const handleKeyPress = (event: React.KeyboardEvent) => {
@@ -124,6 +212,16 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
     setShowSuggestionsList(false);
     if (textFieldRef.current) {
       textFieldRef.current.focus();
+    }
+  };
+  
+  const handleApplyImprovedPrompt = () => {
+    if (promptImprovement && promptImprovement.improved_prompt) {
+      setInput(promptImprovement.improved_prompt);
+      setShowImprovementPanel(false);
+      if (textFieldRef.current) {
+        textFieldRef.current.focus();
+      }
     }
   };
 
@@ -145,6 +243,7 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
         position: 'relative',
       }}
     >
+      {/* Auto-suggestions panel */}
       {showSuggestionsList && (
         <Paper
           elevation={3}
@@ -180,6 +279,57 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading, showSuggestions 
           </List>
         </Paper>
       )}
+      
+      {/* Prompt improvement panel */}
+      <Collapse in={showImprovementPanel}>
+        <Paper
+          elevation={3}
+          sx={{
+            mb: 2,
+            p: 2,
+            borderRadius: '12px',
+            border: `1px solid ${theme.palette.primary.light}`,
+            backgroundColor: theme.palette.mode === 'dark' ? 'rgba(66, 133, 244, 0.1)' : 'rgba(66, 133, 244, 0.05)',
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+            <TipsAndUpdatesIcon color="primary" sx={{ mr: 1 }} />
+            <Typography variant="subtitle2" fontWeight="bold" color="primary.main">
+              Prompt Improvement Suggestions
+            </Typography>
+          </Box>
+          
+          {loadingImprovement ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+              <CircularProgress size={24} />
+            </Box>
+          ) : (
+            <>
+              <Box sx={{ mb: 2 }}>
+                {promptImprovement?.suggestions.map((suggestion, index) => (
+                  <Typography key={index} variant="body2" sx={{ mt: 0.5 }}>
+                    • {suggestion}
+                  </Typography>
+                ))}
+              </Box>
+              
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={<AutoFixHighIcon />}
+                  onClick={handleApplyImprovedPrompt}
+                  color="primary"
+                >
+                  Apply Improved Prompt
+                </Button>
+              </Box>
+            </>
+          )}
+        </Paper>
+      </Collapse>
+      
+      {/* Chat input */}
       <Paper 
         variant="outlined"
         sx={{ 

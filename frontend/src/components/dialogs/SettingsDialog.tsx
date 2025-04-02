@@ -35,6 +35,8 @@ interface SettingsDialogProps {
   onDarkModeChange: (enabled: boolean) => void;
   autoSuggest: boolean;
   onAutoSuggestChange: (enabled: boolean) => void;
+  promptImprovement: boolean;
+  onPromptImprovementChange: (enabled: boolean) => void;
 }
 
 const SettingsDialog: React.FC<SettingsDialogProps> = ({
@@ -51,7 +53,9 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   darkMode,
   onDarkModeChange,
   autoSuggest,
-  onAutoSuggestChange
+  onAutoSuggestChange,
+  promptImprovement,
+  onPromptImprovementChange
 }) => {
   const theme = useTheme();
   const [localSystemPrompt, setLocalSystemPrompt] = useState<string>(systemPrompt || '');
@@ -59,6 +63,7 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [localFontSize, setLocalFontSize] = useState<number>(fontSize);
   const [localDarkMode, setLocalDarkMode] = useState<boolean>(darkMode);
   const [localAutoSuggest, setLocalAutoSuggest] = useState<boolean>(autoSuggest);
+  const [localPromptImprovement, setLocalPromptImprovement] = useState<boolean>(promptImprovement);
 
   React.useEffect(() => {
     if (open) {
@@ -67,8 +72,9 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
       setLocalFontSize(fontSize);
       setLocalDarkMode(darkMode);
       setLocalAutoSuggest(autoSuggest);
+      setLocalPromptImprovement(promptImprovement);
     }
-  }, [open, systemPrompt, currentPurpose, fontSize, darkMode, autoSuggest]);
+  }, [open, systemPrompt, currentPurpose, fontSize, darkMode, autoSuggest, promptImprovement]);
 
   const handlePurposeChange = (event: SelectChangeEvent<string>) => {
     setLocalPurpose(event.target.value);
@@ -91,6 +97,10 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
   const handleAutoSuggestChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setLocalAutoSuggest(event.target.checked);
+  };
+
+  const handlePromptImprovementChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setLocalPromptImprovement(event.target.checked);
   };
 
   const handleCancel = () => {
@@ -116,6 +126,10 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
     
     if (localAutoSuggest !== autoSuggest) {
       onAutoSuggestChange(localAutoSuggest);
+    }
+    
+    if (localPromptImprovement !== promptImprovement) {
+      onPromptImprovementChange(localPromptImprovement);
     }
     
     onClose();
@@ -212,6 +226,25 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 />
               }
               label="Enable Auto-Suggestions"
+            />
+            
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={localPromptImprovement}
+                  onChange={handlePromptImprovementChange}
+                  color="primary"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body1">Enable Prompt Improvement</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    AI will analyze and suggest improvements to your prompts as you type
+                  </Typography>
+                </Box>
+              }
+              sx={{ mt: 1 }}
             />
           </Box>
         </Box>

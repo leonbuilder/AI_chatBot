@@ -110,6 +110,7 @@ function App() {
   const [fontSize, setFontSize] = useState<number>(16);
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const [autoSuggest, setAutoSuggest] = useState<boolean>(true);
+  const [promptImprovement, setPromptImprovement] = useState<boolean>(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -1021,6 +1022,13 @@ function App() {
     localStorage.setItem('autoSuggest', enabled.toString());
   }, []);
 
+  // Handle prompt improvement change
+  const handlePromptImprovementChange = useCallback((enabled: boolean) => {
+    setPromptImprovement(enabled);
+    // Save to localStorage
+    localStorage.setItem('promptImprovement', enabled.toString());
+  }, []);
+
   // Load settings from localStorage on initial load
   useEffect(() => {
     const savedFontSize = localStorage.getItem('fontSize');
@@ -1036,6 +1044,11 @@ function App() {
     const savedAutoSuggest = localStorage.getItem('autoSuggest');
     if (savedAutoSuggest) {
       setAutoSuggest(savedAutoSuggest === 'true');
+    }
+    
+    const savedPromptImprovement = localStorage.getItem('promptImprovement');
+    if (savedPromptImprovement) {
+      setPromptImprovement(savedPromptImprovement === 'true');
     }
   }, []);
 
@@ -1120,6 +1133,7 @@ function App() {
               onSend={handleSend} 
               loading={!!currentEventSource}
               showSuggestions={autoSuggest}
+              enablePromptImprovement={promptImprovement}
             /> 
             {currentEventSource && (
               <Button
@@ -1210,6 +1224,8 @@ function App() {
         onDarkModeChange={handleDarkModeChange}
         autoSuggest={autoSuggest}
         onAutoSuggestChange={handleAutoSuggestChange}
+        promptImprovement={promptImprovement}
+        onPromptImprovementChange={handlePromptImprovementChange}
       />
       
       <Snackbar
