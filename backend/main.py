@@ -514,6 +514,12 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
     session_id = request.session_id or str(uuid.uuid4())
     logger.debug(f"Using session_id: {session_id}")
 
+    # Check if this is a title generation request (from query parameters or session_id pattern)
+    title_generation_mode = '__title_gen' in (session_id or '') or request.purpose == 'Generate title'
+    if title_generation_mode:
+        logger.info(f"Title generation request detected for {session_id}")
+        # For title generation, we'll process the request but skip saving to history
+    
     # Validate and get user message content
     if not request.messages:
         raise HTTPException(status_code=400, detail="No messages provided.")
@@ -523,19 +529,22 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
     user_content = user_message.content
 
     # Save user message
-    try:
-        user_message_id = save_chat_message(
-            user_id=current_user.id,
-            session_id=session_id,
-            role="user",
-            content=user_content, # Use validated content
-            attachments=request.attachments
-        )
-        if not user_message_id:
-            raise HTTPException(status_code=500, detail="Failed to save user message")
-    except Exception as e:
-         logger.exception("Error saving user message:")
-         raise HTTPException(status_code=500, detail=f"Internal server error saving message: {e}")
+    # Skip saving for title generation requests
+    user_message_id = None
+    if not title_generation_mode:
+        try:
+            user_message_id = save_chat_message(
+                user_id=current_user.id,
+                session_id=session_id,
+                role="user",
+                content=user_content, # Use validated content
+                attachments=request.attachments
+            )
+            if not user_message_id:
+                raise HTTPException(status_code=500, detail="Failed to save user message")
+        except Exception as e:
+             logger.exception("Error saving user message:")
+             raise HTTPException(status_code=500, detail=f"Internal server error saving message: {e}")
 
     response_content_str = "Error: Could not generate response." # Initialize as string
     model_used = "error"
@@ -574,16 +583,17 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
              response_content_str = str(response_content_str)
             
         # Assistant message is saved within chat_with_custom_model or needs saving here for default
-        if not request.model_id:
-             assistant_message_id = save_chat_message(
-                 user_id=current_user.id,
-                    session_id=session_id,
-                    role="assistant",
-                 content=response_content_str, 
-                 model_used=model_used
-                )
-             if not assistant_message_id:
-                 logger.error(f"Failed to save assistant message for default model {model_name}")
+        # Skip saving for title generation requests
+        if not request.model_id and not title_generation_mode:
+            assistant_message_id = save_chat_message(
+                user_id=current_user.id,
+                   session_id=session_id,
+                   role="assistant",
+                content=response_content_str, 
+                model_used=model_used
+               )
+            if not assistant_message_id:
+                logger.error(f"Failed to save assistant message for default model {model_name}")
                 
         return ChatResponse(message=response_content_str, role="assistant", session_id=session_id)
                 
@@ -594,16 +604,25 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
         # Check if an assistant message for this error was potentially already saved by chat_with_custom_model
         # This requires inspecting the error or the flow more closely, or adding a flag.
         # For now, let's assume chat_with_custom_model handles its own errors and saves them.
-        if not request.model_id: # Only save if it was the default model path
+        # Skip saving for title generation requests
+        if not request.model_id and not title_generation_mode: # Only save if it was the default model path
             save_chat_message(
-                user_id=current_user.id, session_id=session_id, role="assistant",
-                content=error_content, model_used="error"
+                user_id=current_user.id,
+                session_id=session_id,
+                role="assistant",
+                content=error_content,
+                model_used="error"
             )
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 async def chat_with_custom_model(request: ChatRequest, current_user: User, session_id: str) -> Dict[str, str]:
     """Use a custom model for chat completion, saves messages, returns dict {message, role, model_used}."""
     try:
+        # Check if this is a title generation request
+        title_generation_mode = '__title_gen' in (session_id or '') or request.purpose == 'Generate title'
+        if title_generation_mode:
+            logger.info(f"Title generation request detected in chat_with_custom_model for {session_id}")
+
         # Fetch model_data and session data (including system prompt)
         with get_db() as conn:
             cursor = conn.cursor()
@@ -693,13 +712,15 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
              assistant_content_str = "Sorry, I couldn't generate a response." # Provide default if empty
 
         # Save successful assistant response
-        save_chat_message(
-            user_id=current_user.id,
-            session_id=session_id,
-            role=role,
-            content=assistant_content_str,
-            model_used=model_used
-        )
+        # Skip saving for title generation requests
+        if not title_generation_mode:
+            save_chat_message(
+                user_id=current_user.id,
+                session_id=session_id,
+                role=role,
+                content=assistant_content_str,
+                model_used=model_used
+            )
 
         return {
             "message": assistant_content_str,
@@ -710,10 +731,13 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
     except Exception as e:
         logger.error(f"Error in custom model chat: {str(e)}", exc_info=True)
         # Save error message before re-raising (will be caught by main endpoint)
-        save_chat_message(
-            user_id=current_user.id, session_id=session_id, role="assistant",
-            content=f"An error occurred processing the custom model request: {e}", model_used=f"custom:{request.model_id}-error"
-        )
+        # Skip saving for title generation requests
+        title_generation_mode = '__title_gen' in (session_id or '') or request.purpose == 'Generate title'
+        if not title_generation_mode:
+            save_chat_message(
+                user_id=current_user.id, session_id=session_id, role="assistant",
+                content=f"An error occurred processing the custom model request: {e}", model_used=f"custom:{request.model_id}-error"
+            )
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/custom_models", response_model=CustomModelResponse)

@@ -274,11 +274,12 @@ function App() {
         }
       ];
       
-      // Use the regular chat API to get a title suggestion
-      const response = await apiClient.post('/api/chat', {
+      // Use a special URL parameter to indicate this is a title generation request that shouldn't create a session
+      const response = await apiClient.post('/api/chat?title_generation=true', {
         messages: historyForTitleGeneration,
         purpose: 'Generate title',
-        session_id: null // Use a separate session so this doesn't appear in the chat
+        // Pass the existing session ID but mark it for backend to know this is just for title generation
+        session_id: `${sessionId}__title_gen`
       });
       
       if (response.data && response.data.message) {
