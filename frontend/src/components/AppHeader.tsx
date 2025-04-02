@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
     AppBar, Toolbar, Typography, IconButton, MenuItem, Button, Box, TextField, Tooltip,
-    Tabs, Tab, Select, FormControl, InputLabel, SelectChangeEvent
+    Tabs, Tab, Select, FormControl, InputLabel, SelectChangeEvent, useTheme, alpha
 } from '@mui/material';
 
 import MenuIcon from '@mui/icons-material/Menu';
@@ -10,7 +10,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import LinkIcon from '@mui/icons-material/Link';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
 import LogoutIcon from '@mui/icons-material/Logout';
-import { Edit, Save, Cancel } from '@mui/icons-material';
+import { Edit, Save, Cancel, Settings } from '@mui/icons-material';
 import { CustomModel, SessionInfo } from '../types';
 
 // Define the props for the component
@@ -61,7 +61,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     onToggleSidebar,
     onLogout
 }) => {
-
+    const theme = useTheme();
     const selectedModel = customModels.find(m => m.id === selectedModelId);
     const [isEditingPrompt, setIsEditingPrompt] = useState<boolean>(false);
     const [editedPrompt, setEditedPrompt] = useState<string>('');
@@ -90,85 +90,151 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     };
 
     return (
-        <AppBar position="static" color="default" elevation={1}>
-            <Toolbar sx={{ flexDirection: 'column', alignItems: 'stretch', pt: 1, pb: 1 }}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                    {isLoggedIn && (
-                        <IconButton
-                            color="inherit"
-                            aria-label="open drawer"
-                            edge="start"
-                            onClick={onToggleSidebar}
-                            sx={{ mr: 1 }}
-                        >
-                            <MenuIcon />
-                        </IconButton>
-                    )}
-                    <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-                        AI Chatbot
-                    </Typography>
+        <AppBar position="static" color="default" elevation={0}>
+            <Toolbar sx={{ 
+                flexDirection: 'column', 
+                alignItems: 'stretch', 
+                p: { xs: 1.5, sm: 2 },
+                pt: { xs: 1.5, sm: 2 },
+                pb: 0,
+            }}>
+                {/* Top Bar */}
+                <Box sx={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    mb: 1.5
+                }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                        {isLoggedIn && (
+                            <IconButton
+                                onClick={onToggleSidebar}
+                                size="small"
+                                sx={{ 
+                                    mr: 1.5,
+                                    color: theme.palette.text.secondary,
+                                }}
+                            >
+                                <MenuIcon />
+                            </IconButton>
+                        )}
+                        <Typography variant="h6" sx={{ 
+                            fontWeight: 600,
+                            fontSize: '1.2rem', 
+                            color: theme.palette.primary.main,
+                        }}>
+                            AI Chatbot
+                        </Typography>
+                    </Box>
+                    
                     {isLoggedIn && (
                         <Button
-                            color="inherit"
+                            variant="text"
                             onClick={onLogout}
                             startIcon={<LogoutIcon />}
                             size="small"
+                            sx={{ color: theme.palette.text.secondary }}
                         >
                             Logout
                         </Button>
                     )}
                 </Box>
 
+                {/* Tabs */}
                 <Tabs
                     value={tabValue}
                     onChange={onTabChange}
                     indicatorColor="primary"
                     textColor="primary"
                     variant="fullWidth"
-                    sx={{ borderBottom: 1, borderColor: 'divider' }}
+                    sx={{ 
+                        '.MuiTab-root': {
+                            textTransform: 'none',
+                            fontWeight: 500,
+                            minHeight: 40,
+                        }
+                    }}
                 >
                     <Tab label="General Chat" />
                     <Tab label="Custom Models" />
                 </Tabs>
 
-                <Box sx={{ pt: 2 }}>
+                <Box sx={{ py: 1.5 }}>
+                    {/* System Prompt */}
                     {activeSessionId && (
-                        <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Box sx={{ 
+                            mb: 1.5, 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            border: `1px solid ${theme.palette.divider}`,
+                            borderRadius: theme.shape.borderRadius,
+                            padding: 1.5,
+                        }}>
                             {isEditingPrompt ? (
                                 <TextField
-                                    label="System Prompt / Context"
                                     variant="outlined"
                                     size="small"
                                     fullWidth
                                     multiline
-                                    maxRows={4}
+                                    rows={2}
                                     value={editedPrompt}
                                     onChange={(e) => setEditedPrompt(e.target.value)}
                                     autoFocus
+                                    placeholder="System prompt (instructions for the AI)"
+                                    sx={{
+                                        fontSize: '0.85rem',
+                                    }}
                                 />
                             ) : (
-                                <Typography variant="body2" sx={{ color: 'text.secondary', fontStyle: 'italic', flexGrow: 1 }}>
-                                    {activeSessionSystemPrompt ? `Context: ${activeSessionSystemPrompt}` : "No custom context set for this chat."}
-                                </Typography>
+                                <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                                    <Settings 
+                                        fontSize="small" 
+                                        sx={{ mr: 1.5, color: theme.palette.text.secondary, opacity: 0.7 }} 
+                                    />
+                                    <Typography 
+                                        variant="body2" 
+                                        sx={{ 
+                                            color: activeSessionSystemPrompt ? theme.palette.text.primary : theme.palette.text.secondary, 
+                                            fontStyle: activeSessionSystemPrompt ? 'normal' : 'italic',
+                                            fontSize: '0.85rem',
+                                            flexGrow: 1,
+                                        }}
+                                    >
+                                        {activeSessionSystemPrompt ? activeSessionSystemPrompt : "No custom context set"}
+                                    </Typography>
+                                </Box>
                             )}
                             
                             {isEditingPrompt ? (
-                                <>
-                                    <Tooltip title="Save Prompt">
-                                        <IconButton onClick={handleSavePrompt} color="primary" size="small"><Save /></IconButton>
-                                    </Tooltip>
-                                    <Tooltip title="Cancel Edit">
-                                        <IconButton onClick={handleCancelEditPrompt} size="small"><Cancel /></IconButton>
-                                    </Tooltip>
-                                </>
+                                <Box sx={{ display: 'flex', alignItems: 'center', ml: 1, gap: 0.5 }}>
+                                    <IconButton 
+                                        onClick={handleSavePrompt} 
+                                        size="small"
+                                        sx={{ color: theme.palette.primary.main }}
+                                    >
+                                        <Save fontSize="small" />
+                                    </IconButton>
+                                    <IconButton 
+                                        onClick={handleCancelEditPrompt} 
+                                        size="small"
+                                        sx={{ color: theme.palette.error.main }}
+                                    >
+                                        <Cancel fontSize="small" />
+                                    </IconButton>
+                                </Box>
                             ) : (
-                                <Tooltip title="Edit Context">
-                                    <IconButton onClick={handleStartEditPrompt} size="small"><Edit /></IconButton>
-                                </Tooltip>
+                                <IconButton 
+                                    onClick={handleStartEditPrompt} 
+                                    size="small"
+                                    sx={{ color: theme.palette.text.secondary }}
+                                >
+                                    <Edit fontSize="small" />
+                                </IconButton>
                             )}
                         </Box>
                     )}
                     
+                    {/* Tab Content */}
                     {tabValue === 0 ? (
                         <FormControl fullWidth size="small">
                             <InputLabel>Purpose</InputLabel>
@@ -186,8 +252,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                         </FormControl>
                     ) : (
                         <Box>
-                            <Box sx={{ display: 'flex', alignItems: 'center', mb: selectedModelId ? 1.5 : 0, gap: 2 }}>
-                                <FormControl fullWidth size="small" sx={{ flexGrow: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', mb: selectedModelId ? 1.5 : 0, gap: 1.5 }}>
+                                <FormControl fullWidth size="small">
                                     <InputLabel>Custom Model</InputLabel>
                                     <Select
                                         value={selectedModelId || ''}
@@ -207,23 +273,21 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                                 </FormControl>
                                 <Button
                                     variant="contained"
-                                    color="primary"
-                                    size="medium"
+                                    size="small"
                                     startIcon={<AddIcon />}
                                     onClick={onCreateModelClick}
-                                    sx={{ flexShrink: 0 }}
                                 >
                                     Create
                                 </Button>
                             </Box>
                             
                             {selectedModelId && selectedModel && (
-                                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mt: 1.5 }}>
                                     {selectedModel.model_type === 'assistant' && (
                                         <Button
                                             variant="outlined"
                                             size="small"
-                                            startIcon={<FileUploadIcon />}
+                                            startIcon={<FileUploadIcon fontSize="small" />}
                                             onClick={onUploadFileClick}
                                         >
                                             Upload File
@@ -232,7 +296,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                                     <Button
                                         variant="outlined"
                                         size="small"
-                                        startIcon={<LinkIcon />}
+                                        startIcon={<LinkIcon fontSize="small" />}
                                         onClick={onAddWebsiteClick}
                                     >
                                         Add Website
@@ -241,7 +305,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                                         variant="outlined"
                                         size="small"
                                         color="error"
-                                        startIcon={<DeleteIcon />}
+                                        startIcon={<DeleteIcon fontSize="small" />}
                                         onClick={() => onDeleteModelClick(selectedModelId)}
                                         sx={{ ml: 'auto' }}
                                     >

@@ -7,7 +7,6 @@ import {
   ListItemText,
   Typography,
   Box,
-  Divider,
   CircularProgress,
   IconButton,
   TextField,
@@ -16,9 +15,11 @@ import {
   DialogContent,
   DialogContentText,
   DialogTitle,
-  Button
+  Button,
+  useTheme,
+  alpha
 } from '@mui/material';
-import { AddCircleOutline, ChatBubbleOutline, DeleteOutline, Edit, Check, Close } from '@mui/icons-material';
+import { ChatBubbleOutline, DeleteOutline, Edit, Check, Close, Add } from '@mui/icons-material';
 import { SessionInfo } from '../types';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -45,6 +46,7 @@ const SessionSidebar: React.FC<SessionSidebarProps> = ({
   isOpen,
   onClose
 }) => {
+  const theme = useTheme();
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState<string>('');
   const [confirmDeleteDialogOpen, setConfirmDeleteDialogOpen] = useState<boolean>(false);
@@ -100,81 +102,213 @@ const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   return (
     <>
-      <Drawer anchor="left" open={isOpen} onClose={onClose}>
+      <Drawer 
+        anchor="left" 
+        open={isOpen} 
+        onClose={onClose} 
+        PaperProps={{ 
+          sx: { 
+            width: 280,
+            borderRight: `1px solid ${theme.palette.divider}`,
+          } 
+        }}
+      >
         <Box
-          sx={{ width: 250, display: 'flex', flexDirection: 'column', height: '100%' }}
+          sx={{ 
+            display: 'flex', 
+            flexDirection: 'column', 
+            height: '100%',
+            bgcolor: theme.palette.background.paper,
+          }}
           role="presentation"
         >
-          <Box sx={{ p: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Typography variant="h6">Chat History</Typography>
-            <IconButton onClick={onNewSession} color="primary" title="New Chat">
-                <AddCircleOutline />
-            </IconButton>
+          {/* Header */}
+          <Box sx={{ 
+            p: 2, 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            borderBottom: `1px solid ${theme.palette.divider}`,
+          }}>
+            <Typography variant="h6" sx={{ 
+              fontSize: '1rem',
+              fontWeight: 600,
+              color: theme.palette.text.primary
+            }}>
+              Conversations
+            </Typography>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={onNewSession}
+              startIcon={<Add fontSize="small" />}
+              sx={{ 
+                textTransform: 'none',
+                fontSize: '0.85rem',
+              }}
+            >
+              New Chat
+            </Button>
           </Box>
-          <Divider />
-          <Box sx={{ flexGrow: 1, overflowY: 'auto' }}>
+          
+          {/* Chat list */}
+          <Box sx={{ 
+            flexGrow: 1, 
+            overflowY: 'auto',
+            py: 1,
+          }}>
             {loading ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-                <CircularProgress />
+              <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100px', mt: 4 }}>
+                <CircularProgress size={24} />
               </Box>
             ) : (
-              <List dense>
+              <List sx={{ px: 1 }}>
                 {sessions.length === 0 && (
-                    <ListItem>
-                         <ListItemText primary="No chat history found." />
-                    </ListItem>
+                  <Box sx={{ 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    p: 3,
+                    mt: 2,
+                    color: theme.palette.text.secondary,
+                    textAlign: 'center'
+                  }}>
+                    <ChatBubbleOutline sx={{ fontSize: '2rem', mb: 1.5, opacity: 0.7 }} />
+                    <Typography variant="body2" sx={{ mb: 2 }}>
+                      No conversations yet
+                    </Typography>
+                    <Button 
+                      variant="outlined" 
+                      size="small" 
+                      onClick={onNewSession}
+                      startIcon={<Add fontSize="small" />}
+                    >
+                      Start a new chat
+                    </Button>
+                  </Box>
                 )}
                 {sessions.map((session) => (
                   <ListItem 
                     key={session.session_id} 
                     disablePadding 
-                    secondaryAction={
-                      editingSessionId === session.session_id ? (
-                        <>
-                          <IconButton edge="end" size="small" onClick={handleSaveEdit} color="primary">
-                            <Check fontSize="inherit" />
+                    sx={{ mb: 0.5 }}
+                  >
+                    {editingSessionId === session.session_id ? (
+                      <Box sx={{ py: 1, px: 1.5, width: '100%' }}>
+                        <TextField 
+                          variant="outlined" 
+                          size="small"
+                          value={newTitle}
+                          onChange={(e) => setNewTitle(e.target.value)}
+                          autoFocus
+                          fullWidth
+                          placeholder="Chat name"
+                          InputProps={{
+                            sx: { fontSize: '0.9rem' }
+                          }}
+                          onKeyDown={(e) => { 
+                            if (e.key === 'Enter') handleSaveEdit(); 
+                            if (e.key === 'Escape') handleCancelEdit(); 
+                          }}
+                        />
+                        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1, gap: 1 }}>
+                          <IconButton 
+                            size="small" 
+                            onClick={handleSaveEdit} 
+                            sx={{ color: theme.palette.primary.main }}
+                          >
+                            <Check fontSize="small" />
                           </IconButton>
-                          <IconButton edge="end" size="small" onClick={handleCancelEdit} sx={{ ml: 0.5 }}>
-                            <Close fontSize="inherit" />
-                          </IconButton>
-                        </>
-                      ) : (
-                        <Box sx={{ display: 'flex'}}> 
-                          <IconButton edge="end" size="small" onClick={() => handleStartEdit(session)} sx={{ mr: 0.5 }} title="Rename">
-                            <Edit fontSize="inherit" />
-                          </IconButton>
-                          <IconButton edge="end" size="small" onClick={() => handleOpenConfirmDelete(session.session_id)} color="error" title="Delete">
-                            <DeleteOutline fontSize="inherit" />
+                          <IconButton 
+                            size="small" 
+                            onClick={handleCancelEdit} 
+                            sx={{ color: theme.palette.error.main }}
+                          >
+                            <Close fontSize="small" />
                           </IconButton>
                         </Box>
-                      )
-                    }
-                   >
-                   {editingSessionId === session.session_id ? (
-                       <TextField 
-                           variant="standard" 
-                           size="small"
-                           value={newTitle}
-                           onChange={(e) => setNewTitle(e.target.value)}
-                           autoFocus
-                           fullWidth
-                           sx={{ ml: 1, mr: 1}}
-                           onKeyDown={(e) => { if (e.key === 'Enter') handleSaveEdit(); if (e.key === 'Escape') handleCancelEdit(); }}
-                       />
+                      </Box>
                     ) : (
                       <ListItemButton
                         selected={session.session_id === activeSessionId}
                         onClick={() => onSelectSession(session.session_id)}
+                        sx={{
+                          py: 1.5,
+                          px: 1.5,
+                          borderRadius: theme.shape.borderRadius,
+                          position: 'relative',
+                          '&.Mui-selected': {
+                            backgroundColor: alpha(theme.palette.primary.main, 0.08),
+                          },
+                        }}
                       >
-                        <ChatBubbleOutline sx={{ mr: 1, fontSize: '1rem', color: 'text.secondary' }} />
+                        <ChatBubbleOutline sx={{ 
+                          mr: 1.5, 
+                          fontSize: '1.1rem', 
+                          color: session.session_id === activeSessionId 
+                            ? theme.palette.primary.main 
+                            : theme.palette.text.secondary,
+                          opacity: 0.75
+                        }} />
                         <ListItemText 
                           primary={getSessionTitle(session)}
                           secondary={formatTimestamp(session.last_message_timestamp)}
-                          primaryTypographyProps={{ noWrap: true, sx: { fontWeight: session.session_id === activeSessionId ? 'bold' : 'normal'} }}
-                          secondaryTypographyProps={{ noWrap: true, fontSize: '0.75rem' }}
+                          primaryTypographyProps={{ 
+                            noWrap: true, 
+                            sx: { 
+                              fontWeight: session.session_id === activeSessionId ? 500 : 400,
+                              fontSize: '0.9rem',
+                            } 
+                          }}
+                          secondaryTypographyProps={{ 
+                            noWrap: true, 
+                            sx: {
+                              fontSize: '0.75rem',
+                              mt: 0.5,
+                              opacity: 0.7
+                            }
+                          }}
                         />
+                        
+                        {/* Action buttons */}
+                        <Box sx={{ 
+                          position: 'absolute',
+                          right: 10,
+                          opacity: 0,
+                          '.MuiListItemButton-root:hover &': { opacity: 1 },
+                          display: 'flex',
+                          gap: 0.5
+                        }}>
+                          <IconButton 
+                            size="small" 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleStartEdit(session);
+                            }} 
+                            sx={{ 
+                              color: theme.palette.text.secondary,
+                              p: 0.5
+                            }}
+                          >
+                            <Edit fontSize="small" />
+                          </IconButton>
+                          <IconButton 
+                            size="small" 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenConfirmDelete(session.session_id);
+                            }} 
+                            sx={{ 
+                              color: theme.palette.error.main,
+                              p: 0.5
+                            }}
+                          >
+                            <DeleteOutline fontSize="small" />
+                          </IconButton>
+                        </Box>
                       </ListItemButton>
-                     )}
+                    )}
                   </ListItem>
                 ))}
               </List>
@@ -183,22 +317,40 @@ const SessionSidebar: React.FC<SessionSidebarProps> = ({
         </Box>
       </Drawer>
       
+      {/* Delete confirmation dialog */}
       <Dialog
-          open={confirmDeleteDialogOpen}
-          onClose={handleCloseConfirmDelete}
+        open={confirmDeleteDialogOpen}
+        onClose={handleCloseConfirmDelete}
+        PaperProps={{
+          sx: {
+            borderRadius: theme.shape.borderRadius,
+            maxWidth: '380px'
+          }
+        }}
       >
-          <DialogTitle>Delete Chat?</DialogTitle>
-          <DialogContent>
-              <DialogContentText>
-                  Are you sure you want to permanently delete this chat session?
-              </DialogContentText>
-          </DialogContent>
-          <DialogActions>
-              <Button onClick={handleCloseConfirmDelete}>Cancel</Button>
-              <Button onClick={handleConfirmDelete} color="error" autoFocus>
-                  Delete
-              </Button>
-          </DialogActions>
+        <DialogTitle sx={{ pb: 1 }}>Delete Conversation</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Are you sure you want to delete this conversation? This action cannot be undone.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, pt: 1 }}>
+          <Button 
+            onClick={handleCloseConfirmDelete} 
+            variant="outlined"
+            sx={{ textTransform: 'none' }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleConfirmDelete} 
+            color="error" 
+            variant="contained"
+            sx={{ ml: 1, textTransform: 'none' }}
+          >
+            Delete
+          </Button>
+        </DialogActions>
       </Dialog>
     </>
   );

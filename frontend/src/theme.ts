@@ -5,30 +5,33 @@ import { red } from '@mui/material/colors';
 const theme = createTheme({
   palette: {
     primary: {
-      // Let's use a shade of blue
-      main: '#1976d2', // Material UI blue 700
-      light: '#42a5f5', // Material UI blue 500
-      dark: '#1565c0', // Material UI blue 800
-      contrastText: '#fff',
+      main: '#2563eb', // More professional blue
+      light: '#4b83fb',
+      dark: '#1e4ebd',
+      contrastText: '#ffffff',
     },
     secondary: {
-      // Let's use a shade of purple
-      main: '#9c27b0', // Material UI purple 500
-      light: '#ba68c8', // Material UI purple 300
-      dark: '#7b1fa2', // Material UI purple 700
-      contrastText: '#fff',
+      main: '#64748b', // Slate gray - more neutral
+      light: '#94a3b8',
+      dark: '#475569',
+      contrastText: '#ffffff',
     },
     error: {
-      main: red[500], // Use red from colors
+      main: '#ef4444', // Simpler red
     },
     background: {
-      default: '#f4f6f8', // A light grey background
-      paper: '#ffffff', // White for paper elements
+      default: '#f8fafc', // Very light background
+      paper: '#ffffff',
     },
-    // You can customize other colors like info, warning, success as well
+    text: {
+      primary: '#1e293b', // Darker text for better readability
+      secondary: '#64748b', // Matching secondary color
+    },
+    divider: '#e2e8f0', // Lighter divider
   },
   typography: {
     fontFamily: [
+      'Inter',
       '-apple-system',
       'BlinkMacSystemFont',
       '"Segoe UI"',
@@ -36,79 +39,149 @@ const theme = createTheme({
       '"Helvetica Neue"',
       'Arial',
       'sans-serif',
-      '"Apple Color Emoji"',
-      '"Segoe UI Emoji"',
-      '"Segoe UI Symbol"',
     ].join(','),
     h5: {
-      fontWeight: 500,
-      fontSize: '1.5rem',
+      fontWeight: 600,
+      fontSize: '1.3rem',
     },
     h6: {
-      fontWeight: 500,
-      fontSize: '1.25rem',
+      fontWeight: 600,
+      fontSize: '1.1rem',
     },
-    // You can customize other variants (body1, button, caption, etc.)
+    body1: {
+      fontSize: '0.95rem',
+    },
+    button: {
+      fontWeight: 500,
+      textTransform: 'none', // No uppercase text
+    }
   },
-  // Add global component style overrides
+  shape: {
+    borderRadius: 6, // Slightly smaller for cleaner look
+  },
   components: {
+    MuiCssBaseline: {
+      styleOverrides: `
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+        body {
+          font-family: 'Inter', sans-serif;
+          font-size: 15px;
+          background-color: #f8fafc;
+        }
+      `,
+    },
     MuiButton: {
       styleOverrides: {
-        // Apply to all button variants
         root: {
-          textTransform: 'none', // Disable uppercase text
-          borderRadius: '8px', // Slightly rounder buttons
+          boxShadow: 'none',
+          transition: 'background-color 0.15s ease-in-out', // Simpler transition
         },
-        // Specific variant overrides
         containedPrimary: {
-          boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)', // Subtle shadow
           '&:hover': {
-            boxShadow: '0 3px 6px rgba(0,0,0,0.16), 0 3px 6px rgba(0,0,0,0.23)', // Slightly raise on hover
+            boxShadow: 'none',
           },
         },
         containedSecondary: {
-          boxShadow: '0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24)',
           '&:hover': {
-            boxShadow: '0 3px 6px rgba(0,0,0,0.16), 0 3px 6px rgba(0,0,0,0.23)',
+            boxShadow: 'none',
           },
         },
-        // Add styles for other variants (outlined, text) if needed
+        outlinedPrimary: {
+          borderColor: '#d1d5db',
+          '&:hover': {
+            borderColor: '#2563eb',
+            backgroundColor: 'rgba(37, 99, 235, 0.04)', // Very subtle
+          }
+        },
+        textPrimary: {
+           '&:hover': {
+             backgroundColor: 'rgba(37, 99, 235, 0.04)', // Very subtle
+           }
+        },
       },
     },
     MuiPaper: {
       styleOverrides: {
         root: {
-          // Apply a default, very subtle shadow using theme shadows
-          // elevation={1} will map to shadows[1]
+          backgroundImage: 'none',
         },
       },
       defaultProps: {
-        elevation: 1, // Set default elevation for Paper to 1 (subtle shadow)
+        elevation: 0,
+        variant: 'outlined',
+      }
+    },
+    MuiAppBar: {
+      styleOverrides: {
+        root: {
+          backgroundColor: '#ffffff',
+          borderBottom: '1px solid #e2e8f0',
+          color: '#1e293b'
+        }
+      },
+      defaultProps: {
+        elevation: 0,
+      }
+    },
+    MuiDrawer: {
+      styleOverrides: {
+        paper: {
+          borderRight: '1px solid #e2e8f0',
+        }
+      }
+    },
+    MuiListItemButton: {
+      styleOverrides: {
+        root: {
+          transition: 'background-color 0.15s ease-in-out', // Simple transition
+        }
+      }
+    },
+    MuiIconButton: {
+      styleOverrides: {
+        root: {
+          transition: 'background-color 0.15s ease-in-out', // Simple transition
+        }
       }
     },
     MuiDialogTitle: {
       styleOverrides: {
         root: {
-          borderBottom: '1px solid #e0e0e0', // Add a divider below dialog titles
-          paddingBottom: '12px', 
+          borderBottom: '1px solid #e2e8f0',
+          padding: '16px 24px',
+          fontSize: '1.1rem',
+          fontWeight: 600,
         },
       },
     },
     MuiDialogActions: {
       styleOverrides: {
         root: {
-          borderTop: '1px solid #e0e0e0', // Add a divider above dialog actions
-          paddingTop: '12px',
+          borderTop: '1px solid #e2e8f0',
+          padding: '16px 24px',
         },
       },
     },
-    // Example: Override TextField
-    // MuiTextField: {
-    //   defaultProps: {
-    //     variant: 'outlined', // Default to outlined variant
-    //     size: 'small',       // Default to small size
-    //   },
-    // },
+    MuiTextField: {
+      defaultProps: {
+        variant: 'outlined',
+        size: 'small',
+      },
+      styleOverrides: {
+        root: {
+          '& .MuiOutlinedInput-root': {
+            borderRadius: 6,
+          },
+        },
+      },
+    },
+    MuiSelect: {
+      defaultProps: {
+        variant: 'outlined',
+        size: 'small',
+      }
+    },
   },
 });
 

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { TextField, IconButton, Box, Paper } from '@mui/material';
+import { TextField, IconButton, Box, Paper, useTheme } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 
 interface ChatInputProps {
@@ -8,6 +8,7 @@ interface ChatInputProps {
 }
 
 const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading }) => {
+  const theme = useTheme();
   const [input, setInput] = useState('');
   const [rows, setRows] = useState(1);
   const textFieldRef = useRef<HTMLTextAreaElement>(null);
@@ -15,13 +16,11 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading }) => {
   // Auto-resize the input field based on content
   useEffect(() => {
     if (textFieldRef.current) {
-      // Reset rows to recalculate
       setRows(1);
       
-      const lineHeight = 24; // Increased line height in pixels
-      const maxRows = 12; // Increased maximum number of rows
+      const lineHeight = 24;
+      const maxRows = 8;
       
-      // Calculate required rows based on scrollHeight
       const textArea = textFieldRef.current;
       const calculatedRows = Math.min(
         Math.max(1, Math.ceil(textArea.scrollHeight / lineHeight)), 
@@ -48,105 +47,79 @@ const ChatInput: React.FC<ChatInputProps> = ({ onSend, loading }) => {
 
   const getPlaceholderText = () => {
     if (loading) return "Please wait...";
-    return "Type a message (Shift+Enter for new line)...";
+    return "Type a message (Shift+Enter for new line)";
   };
 
   return (
-    <Paper 
-      elevation={3} 
+    <Box 
       sx={{ 
         display: 'flex',
-        p: { xs: 1.5, sm: 2 },
-        mx: { xs: 1, sm: 3, md: 4 },
-        mb: { xs: 2, sm: 3 },
-        mt: 1,
-        borderRadius: '20px',
-        bgcolor: 'background.paper',
-        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-        transition: 'all 0.3s ease-in-out',
-        '&:hover': {
-          boxShadow: '0 6px 24px rgba(0, 0, 0, 0.12)'
-        },
-        maxWidth: '1200px',
+        justifyContent: 'center',
+        padding: { xs: '0 8px 16px', sm: '0 16px 24px' },
         width: '100%',
-        alignSelf: 'center'
+        maxWidth: '900px',
+        margin: '0 auto',
       }}
     >
-      <TextField
-        fullWidth
-        variant="standard"
-        placeholder={getPlaceholderText()}
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyPress={handleKeyPress}
-        disabled={loading}
-        multiline
-        rows={rows}
-        inputRef={textFieldRef}
+      <Paper 
+        variant="outlined"
         sx={{ 
-          mr: { xs: 1, sm: 2 },
-          '& .MuiInputBase-root': {
-            padding: { xs: '10px 14px', sm: '12px 16px' },
-            borderRadius: '16px',
-            transition: 'background-color 0.2s ease',
-            backgroundColor: 'rgba(0, 0, 0, 0.02)',
-            fontSize: { xs: '15px', sm: '16px' },
-          },
-          '& .MuiInputBase-input': {
-            padding: '0',
-            fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
-            fontSize: { xs: '15px', sm: '16px' },
-            lineHeight: { xs: '22px', sm: '24px' },
-          },
-          '& .MuiInput-underline:before': { 
-            borderBottom: 'none'
-          },
-          '& .MuiInput-underline:after': {
-            borderBottom: 'none'
-          },
-          '& .MuiInput-underline:hover:not(.Mui-disabled):before': {
-            borderBottom: 'none'
-          },
-          '& .MuiInputBase-root.Mui-focused': {
-            backgroundColor: 'rgba(25, 118, 210, 0.04)',
-            boxShadow: 'inset 0 0 0 2px rgba(25, 118, 210, 0.3)'
-          },
-          '& .Mui-disabled': {
-            opacity: 0.7,
-            backgroundColor: 'rgba(0, 0, 0, 0.04)'
-          }
-        }}
-      />
-      <IconButton
-        color="primary"
-        onClick={handleSendClick}
-        disabled={loading || !input.trim()}
-        aria-label="Send message"
-        sx={{ 
-          alignSelf: 'flex-end',
-          mb: '6px',
-          width: { xs: '44px', sm: '50px' },
-          height: { xs: '44px', sm: '50px' },
-          borderRadius: '14px',
-          boxShadow: input.trim() ? '0 3px 10px rgba(25, 118, 210, 0.18)' : 'none',
-          transition: 'all 0.25s ease',
-          '&:hover': {
-            backgroundColor: 'primary.main',
-            color: 'white',
-            transform: 'translateY(-2px)',
-            boxShadow: '0 5px 15px rgba(25, 118, 210, 0.25)'
-          },
-          '&.Mui-disabled': {
-            opacity: 0.6
-          },
-          '& .MuiSvgIcon-root': {
-            fontSize: { xs: '1.4rem', sm: '1.6rem' }
-          }
+          display: 'flex',
+          width: '100%',
+          p: 1,
+          px: 2,
+          borderRadius: '12px',
+          borderColor: theme.palette.divider,
+          bgcolor: theme.palette.background.paper,
         }}
       >
-        <SendIcon />
-      </IconButton>
-    </Paper>
+        <TextField
+          fullWidth
+          variant="standard"
+          placeholder={getPlaceholderText()}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyPress}
+          disabled={loading}
+          multiline
+          rows={rows}
+          inputRef={textFieldRef}
+          InputProps={{
+            disableUnderline: true,
+          }}
+          sx={{ 
+            '& .MuiInputBase-root': {
+              padding: '12px 0px',
+              fontSize: '0.95rem',
+              fontFamily: theme.typography.fontFamily,
+            }
+          }}
+        />
+        <IconButton
+          color="primary"
+          onClick={handleSendClick}
+          disabled={loading || !input.trim()}
+          aria-label="Send message"
+          sx={{ 
+            alignSelf: 'flex-end',
+            mb: '6px',
+            width: 40,
+            height: 40,
+            backgroundColor: input.trim() ? theme.palette.primary.main : 'transparent',
+            color: input.trim() ? theme.palette.primary.contrastText : theme.palette.text.disabled,
+            '&:hover': {
+              backgroundColor: input.trim() ? theme.palette.primary.dark : 'transparent',
+            },
+            '&.Mui-disabled': {
+              backgroundColor: 'transparent',
+              color: theme.palette.text.disabled,
+            }
+          }}
+        >
+          <SendIcon fontSize="small" />
+        </IconButton>
+      </Paper>
+    </Box>
   );
 };
 
