@@ -9,7 +9,9 @@ import {
   CircularProgress,
   Breadcrumbs,
   Link,
-  useTheme
+  useTheme,
+  Stack,
+  Pagination
 } from '@mui/material';
 import axios from 'axios';
 import { API_BASE_URL } from '../constants';
@@ -62,7 +64,8 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
   const [selectedPurpose, setSelectedPurpose] = useState<string>(currentPurpose || '');
   const [systemPrompt, setSystemPrompt] = useState<string>('');
   const [isLeaf, setIsLeaf] = useState(false);
-  const [regenerateCount, setRegenerateCount] = useState(0);
+  const [currentSection, setCurrentSection] = useState(1);
+  const [totalSections, setTotalSections] = useState(5); // A reasonable default max number of sections
   
   // Fetch top-level categories on initial load
   useEffect(() => {
@@ -79,13 +82,13 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
     }
   }, [currentPurpose, categories]);
 
-  const fetchCategories = async (path: string[], regenerate = false) => {
+  const fetchCategories = async (path: string[], section = currentSection) => {
     setLoading(true);
     setError(null);
     try {
       const response = await apiClient.post<PurposeCategoryResponse>('/api/purpose-categories', {
         path,
-        regenerate
+        section
       });
 
       setCategories(response.data.categories || []);
@@ -112,7 +115,9 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
     const newPurpose = newPath.join(' > ');
     setSelectedPurpose(newPurpose);
     onChange(newPurpose);
-    fetchCategories(newPath);
+    // Reset to section 1 when navigating to a new category
+    setCurrentSection(1);
+    fetchCategories(newPath, 1);
   };
 
   const handleClickBreadcrumb = (index: number) => {
@@ -121,7 +126,9 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
       setCurrentPath([]);
       setSelectedPurpose('');
       onChange('');
-      fetchCategories([]);
+      // Reset to section 1 when navigating home
+      setCurrentSection(1);
+      fetchCategories([], 1);
       return;
     }
     
@@ -131,7 +138,9 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
     const newPurpose = newPath.join(' > ');
     setSelectedPurpose(newPurpose);
     onChange(newPurpose);
-    fetchCategories(newPath);
+    // Reset to section 1 when navigating via breadcrumbs
+    setCurrentSection(1);
+    fetchCategories(newPath, 1);
   };
 
   const handleFinalSelection = () => {
@@ -140,9 +149,16 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
     }
   };
 
-  const handleRegenerateOptions = () => {
-    setRegenerateCount(prev => prev + 1);
-    fetchCategories(currentPath, true);
+  const handleNextSection = () => {
+    // Go to the next section or loop back to section 1
+    const nextSection = currentSection >= totalSections ? 1 : currentSection + 1;
+    setCurrentSection(nextSection);
+    fetchCategories(currentPath, nextSection);
+  };
+
+  const handleSectionChange = (event: React.ChangeEvent<unknown>, value: number) => {
+    setCurrentSection(value);
+    fetchCategories(currentPath, value);
   };
 
   return (
@@ -207,18 +223,18 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
         </Typography>
       )}
       
-      {/* Categories grid and regenerate button */}
+      {/* Categories grid and section navigation */}
       <Box sx={{ mb: 2, minHeight: '150px' }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="subtitle2">Available options:</Typography>
+          <Typography variant="subtitle2">Options (Section {currentSection} of {totalSections}):</Typography>
           <Button
             variant="outlined"
             size="small"
             startIcon={<RefreshIcon />}
-            onClick={handleRegenerateOptions}
+            onClick={handleNextSection}
             disabled={loading}
           >
-            Show different options
+            Show Section {currentSection >= totalSections ? 1 : currentSection + 1}
           </Button>
         </Box>
 
@@ -242,6 +258,18 @@ const HierarchicalPurposeSelector: React.FC<HierarchicalPurposeSelectorProps> = 
             ))}
           </Grid>
         )}
+        
+        {/* Section pagination */}
+        <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+          <Pagination 
+            count={totalSections} 
+            page={currentSection}
+            onChange={handleSectionChange}
+            size="small"
+            color="primary"
+            disabled={loading}
+          />
+        </Box>
       </Box>
       
       {/* System prompt preview for leaf nodes */}

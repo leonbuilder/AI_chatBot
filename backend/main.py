@@ -2075,14 +2075,27 @@ async def improve_prompt(request: Request, current_user: User = Depends(get_curr
 # --- AI Generated Purpose Categories Endpoint ---
 @app.post("/api/purpose-categories")
 async def get_purpose_categories(request: Request, current_user: User = Depends(get_current_user)):
-    """Generate hierarchical purpose categories based on user selection"""
+    """Generate hierarchical purpose categories based on user selection and section"""
     try:
         data = await request.json()
         current_path = data.get("path", [])  # The path of selections so far
-        regenerate = data.get("regenerate", False)  # Whether to regenerate options
+        section = data.get("section", 1)  # The section number (default: 1)
         
-        # Adjust temperature if regenerating to get more varied results
-        temperature = 0.9 if regenerate else 0.7
+        # Ensure section is an integer
+        try:
+            section = int(section)
+        except (ValueError, TypeError):
+            section = 1
+            
+        # Vary temperature and seed based on section to get consistently different results per section
+        # Higher section numbers get higher temperature for more diverse results
+        base_temperature = 0.7
+        temperature = min(0.9, base_temperature + ((section - 1) * 0.05))
+        
+        # Create a seed that's stable for each combination of path+section
+        # This ensures the same section always shows the same options
+        path_str = "_".join(current_path) if current_path else "root"
+        seed_value = hash(f"{path_str}_{section}") % 1000000
         
         # If path is empty, generate top-level categories
         if not current_path:
@@ -2090,17 +2103,26 @@ async def get_purpose_categories(request: Request, current_user: User = Depends(
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": """You are an expert at categorizing AI use cases.
+                    {"role": "system", "content": f"""You are an expert at categorizing AI use cases.
                      Generate a list of 6-8 broad purpose categories for an AI assistant.
                      Each category should be a single word or short phrase (max 2-3 words).
                      Examples: "Programmer", "Writer", "Academic Research", "Business Analysis", etc.
-                     Format your response as a JSON array of strings.
+                     Format your response as a JSON object with a "categories" field containing an array of strings.
                      Make the categories diverse and comprehensive.
-                     """ + ("""Provide completely different options from those typically suggested.""" if regenerate else "")},
-                    {"role": "user", "content": "Generate top-level purpose categories"}
+                     
+                     This is section {section} of multiple sections.
+                     Section 1 should have the most common/popular categories.
+                     Section 2 should have more specialized professional categories.
+                     Section 3 should have creative and entertainment categories.
+                     Section 4 should have educational and learning-focused categories.
+                     Section 5 should have unique, niche, or specialized categories.
+                     
+                     DO NOT repeat categories from other sections. Make each section completely unique."""},
+                    {"role": "user", "content": f"Generate top-level purpose categories for section {section}"}
                 ],
                 max_tokens=300,
                 temperature=temperature,
+                seed=seed_value,
                 response_format={"type": "json_object"}
             )
             
@@ -2136,11 +2158,20 @@ async def get_purpose_categories(request: Request, current_user: User = Depends(
                      Format your response as a JSON object with a "categories" field containing an array of strings.
                      If this seems like a leaf category that doesn't need further subdivision, include a "is_leaf" field set to true.
                      If it's a leaf category, also generate a "system_prompt" field with a detailed instruction prompt for this specific purpose.
-                     """ + ("""Provide completely different options from those typically suggested.""" if regenerate else "")},
-                    {"role": "user", "content": f"Generate subcategories for: {current_selection}"}
+                     
+                     This is section {section} of multiple sections.
+                     Section 1 should have the most common/popular subcategories.
+                     Section 2 should have more specialized subcategories.
+                     Section 3 should have creative or unusual subcategories.
+                     Section 4 should have technical or specific subcategories.
+                     Section 5 should have unique, niche, or specialized subcategories.
+                     
+                     DO NOT repeat subcategories from other sections. Make each section completely unique."""},
+                    {"role": "user", "content": f"Generate subcategories for: {current_selection}, section {section}"}
                 ],
                 max_tokens=500,
                 temperature=temperature,
+                seed=seed_value,
                 response_format={"type": "json_object"}
             )
             
