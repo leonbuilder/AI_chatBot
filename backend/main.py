@@ -2071,3 +2071,118 @@ async def improve_prompt(request: Request, current_user: User = Depends(get_curr
         logger.error(f"Error improving prompt: {str(e)}")
         return {"improved_prompt": input_text, "error": str(e)}
 # --- End AI Powered Prompt Improvement Endpoint ---
+
+# --- AI Generated Purpose Categories Endpoint ---
+@app.post("/api/purpose-categories")
+async def get_purpose_categories(request: Request, current_user: User = Depends(get_current_user)):
+    """Generate hierarchical purpose categories based on user selection"""
+    try:
+        data = await request.json()
+        current_path = data.get("path", [])  # The path of selections so far
+        regenerate = data.get("regenerate", False)  # Whether to regenerate options
+        
+        # Adjust temperature if regenerating to get more varied results
+        temperature = 0.9 if regenerate else 0.7
+        
+        # If path is empty, generate top-level categories
+        if not current_path:
+            # Generate main categories
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": """You are an expert at categorizing AI use cases.
+                     Generate a list of 6-8 broad purpose categories for an AI assistant.
+                     Each category should be a single word or short phrase (max 2-3 words).
+                     Examples: "Programmer", "Writer", "Academic Research", "Business Analysis", etc.
+                     Format your response as a JSON array of strings.
+                     Make the categories diverse and comprehensive.
+                     """ + ("""Provide completely different options from those typically suggested.""" if regenerate else "")},
+                    {"role": "user", "content": "Generate top-level purpose categories"}
+                ],
+                max_tokens=300,
+                temperature=temperature,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse the response
+            content = response.choices[0].message.content
+            if content is None:
+                logger.error("Received None as content from OpenAI API for purpose categories")
+                return {"categories": DEFAULT_CATEGORIES}
+                
+            try:
+                result = json.loads(content)
+                categories = result.get("categories", [])
+                if not isinstance(categories, list) or len(categories) == 0:
+                    # Fallback to default categories
+                    logger.warning(f"Invalid categories format received: {result}")
+                    return {"categories": DEFAULT_CATEGORIES}
+                
+                return {"categories": categories}
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse JSON from OpenAI for purpose categories")
+                return {"categories": DEFAULT_CATEGORIES}
+                
+        else:
+            # Generate subcategories based on the current path
+            current_selection = " > ".join(current_path)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": f"""You are an expert at categorizing AI use cases.
+                     The user has selected the following path for their AI purpose: "{current_selection}".
+                     Generate 5-7 specific subcategories that fit under this selection.
+                     Each subcategory should be a single word or short phrase (max 2-3 words) that narrows down the purpose.
+                     Format your response as a JSON object with a "categories" field containing an array of strings.
+                     If this seems like a leaf category that doesn't need further subdivision, include a "is_leaf" field set to true.
+                     If it's a leaf category, also generate a "system_prompt" field with a detailed instruction prompt for this specific purpose.
+                     """ + ("""Provide completely different options from those typically suggested.""" if regenerate else "")},
+                    {"role": "user", "content": f"Generate subcategories for: {current_selection}"}
+                ],
+                max_tokens=500,
+                temperature=temperature,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse the response
+            content = response.choices[0].message.content
+            if content is None:
+                logger.error(f"Received None as content from OpenAI API for subcategories of {current_selection}")
+                return {"categories": [f"Specific {current_path[-1]} Tasks"], "is_leaf": False}
+                
+            try:
+                result = json.loads(content)
+                categories = result.get("categories", [])
+                is_leaf = result.get("is_leaf", False)
+                system_prompt = result.get("system_prompt", "") if is_leaf else ""
+                
+                if not isinstance(categories, list) or len(categories) == 0:
+                    # Generate a default subcategory
+                    logger.warning(f"Invalid subcategories format for {current_selection}: {result}")
+                    categories = [f"Specific {current_path[-1]} Tasks"]
+                    is_leaf = False
+                
+                return {
+                    "categories": categories,
+                    "is_leaf": is_leaf,
+                    "system_prompt": system_prompt
+                }
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse JSON from OpenAI for subcategories of {current_selection}")
+                return {"categories": [f"Specific {current_path[-1]} Tasks"], "is_leaf": False}
+    
+    except Exception as e:
+        logger.error(f"Error generating purpose categories: {str(e)}")
+        return {"categories": DEFAULT_CATEGORIES, "error": str(e)}
+
+# Default categories to use as fallback
+DEFAULT_CATEGORIES = [
+    "Programmer",
+    "Writer",
+    "Academic Research",
+    "Business Analysis",
+    "Creative Work",
+    "Personal Assistant",
+    "Education"
+]
+# --- End AI Generated Purpose Categories Endpoint ---

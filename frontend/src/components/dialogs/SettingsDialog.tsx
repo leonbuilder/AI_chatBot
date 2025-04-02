@@ -18,11 +18,14 @@ import {
   SelectChangeEvent,
   useTheme,
   IconButton,
-  CircularProgress
+  CircularProgress,
+  Tab,
+  Tabs
 } from '@mui/material';
 import { AutoFixHigh } from '@mui/icons-material';
 import axios from 'axios';
 import { API_BASE_URL } from '../../constants';
+import HierarchicalPurposeSelector from '../HierarchicalPurposeSelector';
 
 // Create an axios instance with auth header
 const apiClient = axios.create({
@@ -90,6 +93,10 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [localAutoSuggest, setLocalAutoSuggest] = useState<boolean>(autoSuggest);
   const [localPromptImprovement, setLocalPromptImprovement] = useState<boolean>(promptImprovement);
   const [improvingPrompt, setImprovingPrompt] = useState(false);
+  const [tabValue, setTabValue] = useState(0);
+  
+  // Add state for using new purpose selector
+  const [useHierarchicalSelector, setUseHierarchicalSelector] = useState(true);
 
   React.useEffect(() => {
     if (open) {
@@ -104,6 +111,18 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
   const handlePurposeChange = (event: SelectChangeEvent<string>) => {
     setLocalPurpose(event.target.value);
+  };
+  
+  // Handle hierarchical purpose selection
+  const handleHierarchicalPurposeChange = (purpose: string, generatedSystemPrompt?: string) => {
+    setLocalPurpose(purpose);
+    
+    // If a system prompt was provided and the field is empty or the user confirms
+    if (generatedSystemPrompt && 
+        (localSystemPrompt === '' || 
+         window.confirm('Replace current system prompt with the purpose-specific one?'))) {
+      setLocalSystemPrompt(generatedSystemPrompt);
+    }
   };
 
   const handleFontSizeChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -124,9 +143,13 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const handleAutoSuggestChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setLocalAutoSuggest(event.target.checked);
   };
-
+  
   const handlePromptImprovementChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setLocalPromptImprovement(event.target.checked);
+  };
+  
+  const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
+    setTabValue(newValue);
   };
 
   const handleImproveSystemPrompt = async () => {
@@ -181,7 +204,7 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>Settings</DialogTitle>
       <DialogContent>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, mt: 1 }}>
@@ -191,22 +214,39 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
               Chat Settings
             </Typography>
             
-            <FormControl fullWidth sx={{ mb: 2 }}>
-              <InputLabel>Purpose</InputLabel>
-              <Select 
-                value={localPurpose} 
-                label="Purpose" 
-                onChange={handlePurposeChange}
-              >
-                {purposes.map((p) => (
-                  <MenuItem key={p} value={p}>
-                    {p}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <Tabs
+              value={tabValue}
+              onChange={handleTabChange}
+              aria-label="purpose selection tabs"
+              sx={{ mb: 2 }}
+            >
+              <Tab label="Smart Purpose Selector" />
+              <Tab label="Simple Dropdown" />
+            </Tabs>
+            
+            {tabValue === 0 ? (
+              <HierarchicalPurposeSelector 
+                onChange={handleHierarchicalPurposeChange} 
+                currentPurpose={localPurpose}
+              />
+            ) : (
+              <FormControl fullWidth sx={{ mb: 2 }}>
+                <InputLabel>Purpose</InputLabel>
+                <Select 
+                  value={localPurpose} 
+                  label="Purpose" 
+                  onChange={handlePurposeChange}
+                >
+                  {purposes.map((p) => (
+                    <MenuItem key={p} value={p}>
+                      {p}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
 
-            <Box sx={{ position: 'relative' }}>
+            <Box sx={{ position: 'relative', mt: 2 }}>
               <TextField
                 label="Custom Context (System Prompt)"
                 multiline
