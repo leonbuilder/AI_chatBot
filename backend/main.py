@@ -2027,61 +2027,47 @@ async def get_suggestions(request: Request, current_user: User = Depends(get_cur
 # --- AI Powered Prompt Improvement Endpoint ---
 @app.post("/api/improve-prompt")
 async def improve_prompt(request: Request, current_user: User = Depends(get_current_user)):
-    """Generate AI-powered improvements for a prompt being written"""
+    """Generate AI-powered direct improvements for a prompt being written"""
     try:
         data = await request.json()
         input_text = data.get("prompt", "")
         
         if not input_text or len(input_text.strip()) < 5:
-            return {"improvements": [], "improved_prompt": ""}
+            return {"improved_prompt": input_text}
         
-        # Generate improvements using OpenAI
+        # Generate direct improvement using OpenAI
         response = client.chat.completions.create(
             model="gpt-4o-mini", # Using a smaller model for faster response
             messages=[
-                {"role": "system", "content": """You are an expert at crafting high-quality prompts for AI systems. 
-                 Your job is to analyze prompts being written and suggest improvements to make them more clear, specific, and effective.
-                 For each prompt, provide:
-                 1. A list of specific improvement suggestions (up to 3)
-                 2. An improved version of the entire prompt
-                 Format your response as JSON with 'suggestions' (array) and 'improved_prompt' (string) fields."""},
-                {"role": "user", "content": f"Analyze and improve this prompt: '{input_text}'"}
+                {"role": "system", "content": """You are an expert at improving text. Your job is to directly enhance any text provided to you.
+                 Make it clearer, more specific, and more effective without changing the original intent.
+                 Do not provide suggestions or tips - just return the improved version.
+                 Maintain the same basic structure and intent, but make it more precise and well-written.
+                 Format your response to contain only the improved text with no explanations."""},
+                {"role": "user", "content": f"Improve this text: '{input_text}'"}
             ],
             max_tokens=500,
-            temperature=0.7,
-            response_format={"type": "json_object"}
+            temperature=0.5
         )
         
-        # Parse JSON response
-        content = response.choices[0].message.content
-        if content is None:
+        # Get the improved content
+        improved_content = response.choices[0].message.content
+        if improved_content is None:
             logger.error("Received None as content from OpenAI API")
-            return {"suggestions": [], "improved_prompt": input_text}
+            return {"improved_prompt": input_text}
             
-        try:
-            result = json.loads(content)
-            if not isinstance(result, dict):
-                logger.error(f"Expected dict from JSON parsing, got {type(result)}")
-                return {"suggestions": [], "improved_prompt": input_text}
+        # Remove any quotes that might surround the text
+        improved_content = improved_content.strip().strip('\'\"')
+        
+        # If nothing changed, just return the original
+        if improved_content.lower() == input_text.lower():
+            return {"improved_prompt": input_text}
                 
-            suggestions = result.get("suggestions", [])
-            improved_prompt = result.get("improved_prompt", input_text)
-            
-            # Ensure we return the right types
-            if not isinstance(suggestions, list):
-                suggestions = []
-            if not isinstance(improved_prompt, str):
-                improved_prompt = input_text
-                
-            return {
-                "suggestions": suggestions[:3],  # Limit to 3 suggestions
-                "improved_prompt": improved_prompt
-            }
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON from OpenAI: {e}")
-            return {"suggestions": [], "improved_prompt": input_text}
+        return {
+            "improved_prompt": improved_content
+        }
             
     except Exception as e:
         logger.error(f"Error improving prompt: {str(e)}")
-        return {"suggestions": [], "improved_prompt": input_text, "error": str(e)}
+        return {"improved_prompt": input_text, "error": str(e)}
 # --- End AI Powered Prompt Improvement Endpoint ---

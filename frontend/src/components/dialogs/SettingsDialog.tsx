@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogActions,
@@ -16,8 +16,33 @@ import {
   Divider,
   Box,
   SelectChangeEvent,
-  useTheme
+  useTheme,
+  IconButton,
+  CircularProgress
 } from '@mui/material';
+import { AutoFixHigh } from '@mui/icons-material';
+import axios from 'axios';
+import { API_BASE_URL } from '../../constants';
+
+// Create an axios instance with auth header
+const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+});
+
+// Request interceptor to add the auth token header
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('authToken');
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
 
 interface SettingsDialogProps {
   open: boolean;
@@ -64,6 +89,7 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [localDarkMode, setLocalDarkMode] = useState<boolean>(darkMode);
   const [localAutoSuggest, setLocalAutoSuggest] = useState<boolean>(autoSuggest);
   const [localPromptImprovement, setLocalPromptImprovement] = useState<boolean>(promptImprovement);
+  const [improvingPrompt, setImprovingPrompt] = useState(false);
 
   React.useEffect(() => {
     if (open) {
@@ -101,6 +127,25 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
 
   const handlePromptImprovementChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setLocalPromptImprovement(event.target.checked);
+  };
+
+  const handleImproveSystemPrompt = async () => {
+    if (!localSystemPrompt.trim() || !activeSessionId) return;
+    
+    setImprovingPrompt(true);
+    try {
+      const response = await apiClient.post('/api/improve-prompt', { 
+        prompt: localSystemPrompt
+      });
+      
+      if (response.data.improved_prompt) {
+        setLocalSystemPrompt(response.data.improved_prompt);
+      }
+    } catch (error) {
+      console.error('Error improving system prompt:', error);
+    } finally {
+      setImprovingPrompt(false);
+    }
   };
 
   const handleCancel = () => {
@@ -161,18 +206,33 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
               </Select>
             </FormControl>
 
-            <TextField
-              label="Custom Context (System Prompt)"
-              multiline
-              rows={4}
-              value={localSystemPrompt}
-              onChange={handleSystemPromptChange}
-              fullWidth
-              variant="outlined"
-              placeholder="Enter custom instructions for the AI..."
-              disabled={!activeSessionId}
-              helperText={!activeSessionId ? "Start a conversation first to set custom context" : ""}
-            />
+            <Box sx={{ position: 'relative' }}>
+              <TextField
+                label="Custom Context (System Prompt)"
+                multiline
+                rows={4}
+                value={localSystemPrompt}
+                onChange={handleSystemPromptChange}
+                fullWidth
+                variant="outlined"
+                placeholder="Enter custom instructions for the AI..."
+                disabled={!activeSessionId || improvingPrompt}
+                helperText={!activeSessionId ? "Start a conversation first to set custom context" : ""}
+              />
+              {activeSessionId && localSystemPrompt.trim() && (
+                <Box sx={{ position: 'absolute', top: 0, right: 0, mt: 1, mr: 1 }}>
+                  <IconButton 
+                    onClick={handleImproveSystemPrompt}
+                    size="small"
+                    color="primary"
+                    disabled={improvingPrompt}
+                    title="Improve with AI"
+                  >
+                    {improvingPrompt ? <CircularProgress size={20} /> : <AutoFixHigh />}
+                  </IconButton>
+                </Box>
+              )}
+            </Box>
           </Box>
 
           <Divider />

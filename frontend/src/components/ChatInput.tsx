@@ -124,7 +124,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   // Fetch prompt improvements when input changes
   useEffect(() => {
     const fetchPromptImprovement = async (promptText: string) => {
-      if (!enablePromptImprovement || promptText.length < 10) {
+      if (!enablePromptImprovement || promptText.length < 5) {
         setPromptImprovement(null);
         setShowImprovementPanel(false);
         return;
@@ -134,7 +134,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
         setLoadingImprovement(true);
         const response = await apiClient.post('/api/improve-prompt', { prompt: promptText });
         
-        if (response.data.suggestions && response.data.suggestions.length > 0) {
+        if (response.data.improved_prompt && response.data.improved_prompt !== promptText) {
           setPromptImprovement(response.data);
           setShowImprovementPanel(true);
         } else {
@@ -150,7 +150,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
       }
     };
 
-    // Debounce the prompt improvement API calls
+    // Debounce API calls
     if (improvementDebounceTimeout.current) {
       clearTimeout(improvementDebounceTimeout.current);
     }
@@ -162,9 +162,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
         setPromptImprovement(null);
         setShowImprovementPanel(false);
       }
-    }, 1000); // 1000ms debounce for improvement analysis
+    }, 800); // Reduced from 1000ms
 
-    // Cleanup function
     return () => {
       if (improvementDebounceTimeout.current) {
         clearTimeout(improvementDebounceTimeout.current);
@@ -283,49 +282,37 @@ const ChatInput: React.FC<ChatInputProps> = ({
       {/* Prompt improvement panel */}
       <Collapse in={showImprovementPanel}>
         <Paper
-          elevation={3}
+          elevation={4}
           sx={{
             mb: 2,
-            p: 2,
+            p: 1.5,
             borderRadius: '12px',
             border: `1px solid ${theme.palette.primary.light}`,
             backgroundColor: theme.palette.mode === 'dark' ? 'rgba(66, 133, 244, 0.1)' : 'rgba(66, 133, 244, 0.05)',
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-            <TipsAndUpdatesIcon color="primary" sx={{ mr: 1 }} />
-            <Typography variant="subtitle2" fontWeight="bold" color="primary.main">
-              Prompt Improvement Suggestions
-            </Typography>
-          </Box>
-          
-          {loadingImprovement ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-              <CircularProgress size={24} />
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center' }}>
+              <AutoFixHighIcon color="primary" sx={{ mr: 1 }} />
+              <Typography variant="body2" color="primary.main" fontWeight="medium">
+                AI has improved your prompt
+              </Typography>
             </Box>
-          ) : (
-            <>
-              <Box sx={{ mb: 2 }}>
-                {promptImprovement?.suggestions.map((suggestion, index) => (
-                  <Typography key={index} variant="body2" sx={{ mt: 0.5 }}>
-                    • {suggestion}
-                  </Typography>
-                ))}
-              </Box>
-              
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <Button
-                  variant="contained"
-                  size="small"
-                  startIcon={<AutoFixHighIcon />}
-                  onClick={handleApplyImprovedPrompt}
-                  color="primary"
-                >
-                  Apply Improved Prompt
-                </Button>
-              </Box>
-            </>
-          )}
+            
+            {loadingImprovement ? (
+              <CircularProgress size={20} />
+            ) : (
+              <Button
+                variant="contained"
+                size="small"
+                onClick={handleApplyImprovedPrompt}
+                color="primary"
+                sx={{ minHeight: '30px', py: 0.5 }}
+              >
+                Apply Improved Version
+              </Button>
+            )}
+          </Box>
         </Paper>
       </Collapse>
       
