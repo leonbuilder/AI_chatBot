@@ -12,24 +12,8 @@ export interface CustomModel {
 
 // Sample mock data
 const mockModels: CustomModel[] = [
-  {
-    id: 'mock-1',
-    name: 'Website Assistant (MOCK)',
-    description: 'A mock model for website integration',
-    model_type: 'gpt',
-    instructions: 'Pretend you are an expert on website content',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
-  },
-  {
-    id: 'mock-2',
-    name: 'Document Assistant (MOCK)',
-    description: 'A mock model for document processing',
-    model_type: 'assistant',
-    instructions: 'Help users understand documents',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
-  }
+  // Removed Website Assistant (MOCK)
+  // Removed Document Assistant (MOCK)
 ];
 
 // Mock API endpoints
