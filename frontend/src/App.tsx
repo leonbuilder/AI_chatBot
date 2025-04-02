@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Container,
   Paper,
@@ -231,6 +231,21 @@ function App() {
         console.error(`Error renaming session ${sessionId}:`, error);
         showSnackbar("Failed to rename chat session.", "error");
      }
+  }, [showSnackbar]);
+
+  // Function to update system prompt via API
+  const handleUpdateSystemPrompt = useCallback(async (sessionId: string, newPrompt: string) => {
+        if (!sessionId) return;
+        console.log(`Updating system prompt for session ${sessionId}`);
+        try {
+            const response = await apiClient.patch<SessionInfo>(`/api/chat_sessions/${sessionId}`, { system_prompt: newPrompt });
+            showSnackbar("Chat context updated.", "success");
+            // Update local session state immediately
+            setSessions(prev => prev.map(s => s.session_id === sessionId ? response.data : s));
+        } catch (error) {
+            console.error(`Error updating system prompt for session ${sessionId}:`, error);
+            showSnackbar("Failed to update chat context.", "error");
+        }
   }, [showSnackbar]);
 
   // useEffect for initial data fetching
@@ -662,6 +677,12 @@ function App() {
     }
   };
 
+  // Find the system prompt for the currently active session
+  const activeSessionSystemPrompt = useMemo(() => {
+      if (!activeSessionId) return null;
+      return sessions.find(s => s.session_id === activeSessionId)?.system_prompt || null;
+  }, [activeSessionId, sessions]);
+
   if (!isLoggedIn) {
     return (
       <Container component="main" maxWidth="xs">
@@ -845,6 +866,9 @@ function App() {
               }
             }}
             onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+            activeSessionId={activeSessionId}
+            activeSessionSystemPrompt={activeSessionSystemPrompt}
+            onUpdateSystemPrompt={handleUpdateSystemPrompt}
           />
 
           <Paper 

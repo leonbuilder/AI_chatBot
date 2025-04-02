@@ -21,5 +21,6 @@ export interface CustomModel {
 export interface SessionInfo {
   session_id: string;
   last_message_timestamp?: string; // ISO date string from backend
-  title?: string; // Optional: For display, might be added later to backend
+  title?: string; // Optional: For display
+  system_prompt?: string | null; // Add system_prompt field (can be null)
 } 

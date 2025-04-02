@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   AppBar,
   Toolbar,
@@ -14,33 +14,38 @@ import {
   InputLabel,
   Button,
   SelectChangeEvent,
-  IconButton // Import IconButton
+  IconButton,
+  TextField,
+  Tooltip
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import LinkIcon from '@mui/icons-material/Link';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
 import LogoutIcon from '@mui/icons-material/Logout';
-import MenuIcon from '@mui/icons-material/Menu'; // Import MenuIcon
-import { CustomModel } from '../types'; // Import CustomModel type
+import MenuIcon from '@mui/icons-material/Menu';
+import { CustomModel, SessionInfo } from '../types';
+import { AddCircleOutline, DeleteOutline, Edit, Save, Cancel } from '@mui/icons-material';
 
 interface AppHeaderProps {
   tabValue: number;
   onTabChange: (event: React.SyntheticEvent, newValue: number) => void;
   purposes: string[];
   purpose: string;
-  onPurposeChange: (event: SelectChangeEvent<string>) => void; // Use specific event type
+  onPurposeChange: (event: SelectChangeEvent<string>) => void;
   customModels: CustomModel[];
   selectedModelId: string | null;
-  onModelSelect: (event: SelectChangeEvent<string>) => void; // Use specific event type
+  onModelSelect: (event: SelectChangeEvent<string>) => void;
   onCreateModelClick: () => void;
   onUploadFileClick: () => void;
   onAddWebsiteClick: () => void;
   onDeleteModelClick: (modelId: string) => void;
-  // Add login props
   isLoggedIn: boolean;
   onLogout: () => void;
-  onToggleSidebar: () => void; // Add prop for toggling sidebar
+  onToggleSidebar: () => void;
+  activeSessionId: string | null;
+  activeSessionSystemPrompt: string | null;
+  onUpdateSystemPrompt: (sessionId: string, newPrompt: string) => void;
 }
 
 const AppHeader: React.FC<AppHeaderProps> = ({
@@ -56,36 +61,62 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   onUploadFileClick,
   onAddWebsiteClick,
   onDeleteModelClick,
-  // Destructure login props
   isLoggedIn,
   onLogout,
-  onToggleSidebar, // Destructure new prop
+  onToggleSidebar,
+  activeSessionId,
+  activeSessionSystemPrompt,
+  onUpdateSystemPrompt
 }) => {
 
   const selectedModel = customModels.find(m => m.id === selectedModelId);
+  const [isEditingPrompt, setIsEditingPrompt] = useState<boolean>(false);
+  const [editedPrompt, setEditedPrompt] = useState<string>('');
+
+  useEffect(() => {
+    setEditedPrompt(activeSessionSystemPrompt || '');
+    if (!activeSessionId) {
+      setIsEditingPrompt(false);
+    }
+  }, [activeSessionSystemPrompt, activeSessionId]);
+
+  const handleStartEditPrompt = () => {
+    setIsEditingPrompt(true);
+  };
+
+  const handleCancelEditPrompt = () => {
+    setIsEditingPrompt(false);
+    setEditedPrompt(activeSessionSystemPrompt || '');
+  };
+
+  const handleSavePrompt = () => {
+    if (activeSessionId) {
+      onUpdateSystemPrompt(activeSessionId, editedPrompt);
+      setIsEditingPrompt(false);
+    }
+  };
 
   return (
     <AppBar position="static" color="default" elevation={1}>
       <Toolbar sx={{ flexDirection: 'column', alignItems: 'stretch', pt: 1, pb: 1 }}>
-        {/* Top Row: Toggle Button, Title & Logout Button */}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-          {isLoggedIn && ( // Only show toggle if logged in
-             <IconButton
-                color="inherit"
-                aria-label="open drawer"
-                edge="start"
-                onClick={onToggleSidebar}
-                sx={{ mr: 1 }} // Add some margin
-             >
-                <MenuIcon />
-             </IconButton>
+          {isLoggedIn && (
+            <IconButton
+              color="inherit"
+              aria-label="open drawer"
+              edge="start"
+              onClick={onToggleSidebar}
+              sx={{ mr: 1 }}
+            >
+              <MenuIcon />
+            </IconButton>
           )}
-          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}> {/* Title takes remaining space */}
+          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
             AI Chatbot
           </Typography>
           {isLoggedIn && (
-            <Button 
-              color="inherit" 
+            <Button
+              color="inherit"
               onClick={onLogout}
               startIcon={<LogoutIcon />}
               size="small"
@@ -95,9 +126,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           )}
         </Box>
 
-        {/* Second Row: Tabs */}
-        <Tabs 
-          value={tabValue} 
+        <Tabs
+          value={tabValue}
           onChange={onTabChange}
           indicatorColor="primary"
           textColor="primary"
@@ -108,8 +138,44 @@ const AppHeader: React.FC<AppHeaderProps> = ({
           <Tab label="Custom Models" />
         </Tabs>
 
-        {/* Third Row: Contextual Controls (Purpose/Model Selection & Actions) */}
         <Box sx={{ pt: 2 }}>
+          {activeSessionId && (
+            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+              {isEditingPrompt ? (
+                <TextField
+                  label="System Prompt / Context"
+                  variant="outlined"
+                  size="small"
+                  fullWidth
+                  multiline
+                  maxRows={4}
+                  value={editedPrompt}
+                  onChange={(e) => setEditedPrompt(e.target.value)}
+                  autoFocus
+                />
+              ) : (
+                <Typography variant="body2" sx={{ color: 'text.secondary', fontStyle: 'italic', flexGrow: 1 }}>
+                  {activeSessionSystemPrompt ? `Context: ${activeSessionSystemPrompt}` : "No custom context set for this chat."}
+                </Typography>
+              )}
+              
+              {isEditingPrompt ? (
+                <>
+                  <Tooltip title="Save Prompt">
+                    <IconButton onClick={handleSavePrompt} color="primary" size="small"><Save /></IconButton>
+                  </Tooltip>
+                  <Tooltip title="Cancel Edit">
+                    <IconButton onClick={handleCancelEditPrompt} size="small"><Cancel /></IconButton>
+                  </Tooltip>
+                </>
+              ) : (
+                <Tooltip title="Edit Context">
+                  <IconButton onClick={handleStartEditPrompt} size="small"><Edit /></IconButton>
+                </Tooltip>
+              )}
+            </Box>
+          )}
+          
           {tabValue === 0 ? (
             <FormControl fullWidth size="small">
               <InputLabel>Purpose</InputLabel>
@@ -152,7 +218,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                   size="medium"
                   startIcon={<AddIcon />}
                   onClick={onCreateModelClick}
-                  sx={{ flexShrink: 0 }} // Prevent shrinking
+                  sx={{ flexShrink: 0 }}
                 >
                   Create
                 </Button>
@@ -160,9 +226,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
               
               {selectedModelId && selectedModel && (
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                  {/* Conditionally show Upload File only for assistant models */}
                   {selectedModel.model_type === 'assistant' && (
-                     <Button
+                    <Button
                       variant="outlined"
                       size="small"
                       startIcon={<FileUploadIcon />}
@@ -184,8 +249,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                     size="small"
                     color="error"
                     startIcon={<DeleteIcon />}
-                    onClick={() => onDeleteModelClick(selectedModelId)} // No need for confirm here, handled in App
-                    sx={{ ml: 'auto' }} // Push delete to the right
+                    onClick={() => onDeleteModelClick(selectedModelId)}
+                    sx={{ ml: 'auto' }}
                   >
                     Delete Model
                   </Button>

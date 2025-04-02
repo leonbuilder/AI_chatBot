@@ -133,6 +133,7 @@ def init_db():
         id TEXT PRIMARY KEY,          -- Session ID (matches session_id in chat_messages)
         user_id TEXT NOT NULL,        -- User who owns the session
         title TEXT,                   -- Custom title set by user
+        system_prompt TEXT,           -- Add system prompt column
         created_at TEXT NOT NULL,     -- Timestamp when session was implicitly created (first message)
         last_updated_at TEXT NOT NULL, -- Timestamp of last activity (e.g., new message, rename)
         FOREIGN KEY (user_id) REFERENCES users (id)
@@ -258,7 +259,8 @@ class ChatResponse(BaseModel):
 class ChatSessionInfo(BaseModel):
     session_id: str
     last_message_timestamp: Optional[datetime] = None
-    title: Optional[str] = None # Add title field
+    title: Optional[str] = None
+    system_prompt: Optional[str] = None # Add system_prompt field
 
 class ChatMessageHistory(ChatMessage):
     id: str
@@ -555,7 +557,7 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
             
             completion = client.chat.completions.create(
                 model=model_name,
-                messages=openai_messages,
+                messages=openai_messages, # type: ignore
             )
             gpt_response = completion.choices[0].message.content
             # Ensure gpt_response is treated as a string
@@ -575,41 +577,49 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
         if not request.model_id:
              assistant_message_id = save_chat_message(
                  user_id=current_user.id,
-                 session_id=session_id,
-                 role="assistant",
+                    session_id=session_id,
+                    role="assistant",
                  content=response_content_str, 
                  model_used=model_used
-             )
+                )
              if not assistant_message_id:
                  logger.error(f"Failed to save assistant message for default model {model_name}")
-
+                
         return ChatResponse(message=response_content_str, role="assistant", session_id=session_id)
-
+                
     except Exception as e:
         logger.exception("Error during chat processing:")
         error_content = f"An error occurred: {e}"
         # Save error message IF it wasn't already saved by chat_with_custom_model
-        save_chat_message(
-            user_id=current_user.id,
-            session_id=session_id,
-            role="assistant",
-            content=error_content,
-            model_used="error"
-        )
+        # Check if an assistant message for this error was potentially already saved by chat_with_custom_model
+        # This requires inspecting the error or the flow more closely, or adding a flag.
+        # For now, let's assume chat_with_custom_model handles its own errors and saves them.
+        if not request.model_id: # Only save if it was the default model path
+            save_chat_message(
+                user_id=current_user.id, session_id=session_id, role="assistant",
+                content=error_content, model_used="error"
+            )
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 async def chat_with_custom_model(request: ChatRequest, current_user: User, session_id: str) -> Dict[str, str]:
     """Use a custom model for chat completion, saves messages, returns dict {message, role, model_used}."""
     try:
-        # Fetch model_data etc.
+        # Fetch model_data and session data (including system prompt)
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM custom_models WHERE id = ?", (request.model_id,))
             model_data = cursor.fetchone()
             if not model_data:
-                raise HTTPException(status_code=404, detail=f"Custom model with id {request.model_id} not found")
+                raise HTTPException(status_code=404, detail=f"Custom model {request.model_id} not found")
             config = json.loads(model_data["config"])
             model_type = model_data["model_type"]
+            
+            # Fetch session system prompt
+            cursor.execute("SELECT system_prompt FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
+            session_data = cursor.fetchone()
+            system_prompt = session_data["system_prompt"] if session_data else None
+            
+            # Fetch model files (if needed by assistant)
             cursor.execute("SELECT * FROM model_files WHERE model_id = ?", (request.model_id,))
             file_data = cursor.fetchall()
             file_ids = [file["file_id"] for file in file_data] if file_data else []
@@ -618,7 +628,7 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
         role = "assistant" 
         model_used = f"custom:{model_type}:{request.model_id}"
 
-        # Assistant logic
+        # Assistant logic (uses instructions from assistant object, not session system prompt)
         if model_type == "assistant":
             assistant_id = model_data["assistant_id"]
             if not assistant_id:
@@ -647,17 +657,23 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
                     assistant_content = safely_extract_assistant_text(msg.content)
                     break
         
-        # GPT logic
+        # GPT logic (prepend session system prompt if available)
         else:
-             system_message = {"role": "system", "content": config.get("instructions", f"You are a helpful AI assistant specialized in {request.purpose}.")}
+             base_instructions = config.get("instructions", f"You are a helpful AI assistant specialized in {request.purpose}.")
+             # Use session system prompt if available, otherwise fallback to model instructions
+             # Ensure final_system_content is initialized properly, handling None for system_prompt
+             final_system_content: str = system_prompt if system_prompt is not None else base_instructions
+
              if config.get("website_content"):
-                system_message["content"] += f"\n\nReference website content: {config.get('website_content')}"
+                final_system_content += f"\n\nReference website content: {config.get('website_content')}"
+
+             system_message = {"role": "system", "content": final_system_content}
              openai_messages = [system_message] + [convert_to_openai_message(msg) for msg in request.messages]
              model_name = config.get("model", "gpt-4o-mini")
              model_used = f"custom:gpt:{model_name}"
              response = client.chat.completions.create(
                  model=model_name,
-                 messages=openai_messages,
+                 messages=openai_messages, # type: ignore # Includes system prompt
                  temperature=config.get("temperature", 0.7),
                  max_tokens=config.get("max_tokens", 500),
                  response_format={"type": "text"}
@@ -729,7 +745,7 @@ async def create_custom_model(model: CustomModelCreate, current_user: User = Dep
         # If model type is "assistant", create an OpenAI Assistant
         if model.model_type == "assistant":
             # Create a vector store for the assistant (always needed for file_search)
-            vector_store = client.beta.vector_stores.create(name=f"{model.name} Vector Store")
+            vector_store = client.beta.vector_stores.create(name=f"{model.name} Vector Store") # type: ignore
             vector_store_id = vector_store.id
             logger.info(f"Created vector store {vector_store_id} for assistant {model.name}")
             
@@ -879,7 +895,7 @@ async def add_file_to_model(
         file_object = (file.filename, file_content)
 
         # Use File Batches API for uploading and polling status
-        file_batch = client.beta.vector_stores.file_batches.upload_and_poll(
+        file_batch = client.beta.vector_stores.file_batches.upload_and_poll( # type: ignore
             vector_store_id=vector_store_id, files=[file_object]
         )
 
@@ -942,7 +958,7 @@ async def delete_custom_model(model_id: str):
                         logger.error(f"Error deleting assistant {assistant_id} from OpenAI: {str(e)}")
                 if vector_store_id:
                     try:
-                        client.beta.vector_stores.delete(vector_store_id=vector_store_id)
+                        client.beta.vector_stores.delete(vector_store_id=vector_store_id) # type: ignore
                         logger.info(f"Deleted Vector Store {vector_store_id} from OpenAI.")
                     except Exception as e:
                         # Log error but continue cleanup
@@ -1103,30 +1119,24 @@ class SessionListResponse(BaseModel):
 
 @app.get("/api/chat_sessions", response_model=SessionListResponse)
 async def list_chat_sessions(current_user: User = Depends(get_current_user)):
-    """List all chat sessions for the current user, ordered by last activity."""
+    """List sessions, ordered by last activity, include title & system prompt."""
     sessions = []
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            # Query chat_sessions table joined with first user message for title
             cursor.execute("""
                 SELECT 
                     cs.id as session_id, 
                     cs.title as custom_title, 
+                    cs.system_prompt,
                     cs.last_updated_at as last_message_timestamp,
-                    (SELECT content 
-                     FROM chat_messages 
-                     WHERE session_id = cs.id AND role = 'user' AND is_deleted = FALSE
-                     ORDER BY timestamp ASC 
-                     LIMIT 1) as first_user_message
+                    (SELECT content FROM chat_messages WHERE session_id = cs.id AND role = 'user' AND is_deleted = FALSE ORDER BY timestamp ASC LIMIT 1) as first_user_message
                 FROM chat_sessions cs
                 WHERE cs.user_id = ? 
-                -- Add condition here to exclude sessions with only deleted messages?
-                -- For now, list all sessions associated with the user.
                 ORDER BY cs.last_updated_at DESC
             """, (current_user.id,))
             session_rows = cursor.fetchall()
-
+            
             for row in session_rows:
                  # Use custom title if set, otherwise generate from first message
                  title = row["custom_title"]
@@ -1138,12 +1148,12 @@ async def list_chat_sessions(current_user: User = Depends(get_current_user)):
                          title = first_message
                      else:
                          title = f"Chat Session ({row['session_id'][:6]}...)" # Fallback
-                      
+                
                  sessions.append(ChatSessionInfo(
-                    session_id=row["session_id"],
-                    # Ensure timestamp is parsed correctly if needed, else use string from db
-                    last_message_timestamp=datetime.fromisoformat(row["last_message_timestamp"]),
-                    title=title
+                     session_id=row["session_id"],
+                     last_message_timestamp=datetime.fromisoformat(row["last_message_timestamp"]),
+                     title=title,
+                     system_prompt=row["system_prompt"]
                  ))
         logger.info(f"Retrieved {len(sessions)} sessions for user {current_user.username}")
         return SessionListResponse(sessions=sessions)
@@ -1180,7 +1190,7 @@ async def get_session_messages(
                 ORDER BY timestamp ASC
             """, (session_id, current_user.id))
             message_rows = cursor.fetchall()
-
+            
             # Fetch attachments for all messages in this session efficiently
             message_ids = [row["id"] for row in message_rows]
             attachments_map: Dict[str, List[AttachmentInfo]] = {msg_id: [] for msg_id in message_ids}
@@ -1188,21 +1198,21 @@ async def get_session_messages(
                  placeholders = ',' .join('?' * len(message_ids))
                  cursor.execute(f"""
                      SELECT id, message_id, filename, filesize, mimetype 
-                     FROM chat_attachments 
+                     FROM chat_attachments
                      WHERE message_id IN ({placeholders})
                  """, message_ids)
                  attachment_rows = cursor.fetchall()
                  for att_row in attachment_rows:
                      msg_id = att_row["message_id"]
                      if msg_id in attachments_map:
-                          attachments_map[msg_id].append(AttachmentInfo(
-                              id=att_row["id"],
-                              filename=att_row["filename"],
-                              mimetype=att_row["mimetype"],
-                              filesize=att_row["filesize"],
-                              # Construct download URL (relative path)
-                              download_url=f"/api/chat/attachments/{att_row['id']}" 
-                          ))
+                         attachments_map[msg_id].append(AttachmentInfo(
+                             id=att_row["id"],
+                             filename=att_row["filename"],
+                             mimetype=att_row["mimetype"],
+                             filesize=att_row["filesize"],
+                             # Construct download URL (relative path)
+                             download_url=f"/api/chat/attachments/{att_row['id']}" 
+                         ))
 
             for row in message_rows:
                 timestamp = datetime.fromisoformat(row["timestamp"])
@@ -1253,7 +1263,7 @@ async def delete_chat_session(
             # For now, let's delete it to remove it from the list
             cursor.execute("DELETE FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
             session_deleted = cursor.rowcount > 0
-
+            
             conn.commit()
             logger.info(f"User {current_user.username} deleted session {session_id}. Marked {deleted_count} messages as deleted. Session metadata deleted: {session_deleted}")
             return # FastAPI handles 204 No Content response
@@ -1264,7 +1274,8 @@ async def delete_chat_session(
         raise HTTPException(status_code=500, detail="Could not delete chat session")
 
 class SessionUpdateRequest(BaseModel):
-    title: str # Allow updating the title
+    title: Optional[str] = None # Allow updating title
+    system_prompt: Optional[str] = None # Allow updating system prompt
 
 @app.patch("/api/chat_sessions/{session_id}", response_model=ChatSessionInfo)
 async def update_chat_session(
@@ -1272,61 +1283,83 @@ async def update_chat_session(
     update_data: SessionUpdateRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """Update a chat session (e.g., rename by setting title)."""
+    """Update session title and/or system prompt."""
     now_iso = datetime.now(timezone.utc).isoformat()
-    new_title = update_data.title.strip() # Trim whitespace
-    if not new_title:
-        raise HTTPException(status_code=400, detail="Title cannot be empty.")
+    updates = []
+    params = []
+
+    if update_data.title is not None:
+        new_title = update_data.title.strip()
+        if not new_title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty.")
+        updates.append("title = ?")
+        params.append(new_title)
         
+    # Allow setting prompt to empty string, but treat None as no-update
+    if update_data.system_prompt is not None: 
+        updates.append("system_prompt = ?")
+        params.append(update_data.system_prompt)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No update fields provided (title or system_prompt)." )
+        
+    # Always update last_updated_at
+    updates.append("last_updated_at = ?")
+    params.append(now_iso)
+    
+    # Add session_id and user_id for WHERE clause
+    params.append(session_id)
+    params.append(current_user.id)
+    
+    update_query = f"UPDATE chat_sessions SET {', '.join(updates)} WHERE id = ? AND user_id = ?"
+    
+    conn = None
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            # Update the title and last_updated_at for the session belonging to the user
-            cursor.execute("""
-                UPDATE chat_sessions 
-                SET title = ?, last_updated_at = ? 
-                WHERE id = ? AND user_id = ?
-            """, (new_title, now_iso, session_id, current_user.id))
-            
+            cursor.execute(update_query, tuple(params))
+
             if cursor.rowcount == 0:
-                # Session not found or doesn't belong to the user
                 raise HTTPException(status_code=404, detail="Session not found or access denied")
-            
+
             conn.commit()
             
             # Fetch the updated session info to return
             cursor.execute("""
-                 SELECT cs.id as session_id, cs.title as custom_title, cs.last_updated_at as last_message_timestamp,
+                 SELECT cs.id as session_id, cs.title as custom_title, cs.system_prompt, cs.last_updated_at as last_message_timestamp,
                         (SELECT content FROM chat_messages WHERE session_id = cs.id AND role = 'user' AND is_deleted = FALSE ORDER BY timestamp ASC LIMIT 1) as first_user_message
                  FROM chat_sessions cs 
                  WHERE cs.id = ?
             """, (session_id,))
             updated_row = cursor.fetchone()
-            
+
             if not updated_row:
                 # Should not happen if update succeeded
                 raise HTTPException(status_code=500, detail="Failed to retrieve updated session info")
                 
-            # Construct response object (similar logic to list endpoint)
-            title = updated_row["custom_title"] # Should be the new title now
-            if not title:
+            # Construct response object
+            title = updated_row["custom_title"]
+            if not title: # Fallback title
                  first_message = updated_row["first_user_message"]
                  if first_message and len(first_message) > 50: title = first_message[:47] + "..."
                  elif first_message: title = first_message
                  else: title = f"Chat Session ({updated_row['session_id'][:6]}...)"
                  
-            logger.info(f"User {current_user.username} updated title for session {session_id} to '{new_title}'")
+            logger.info(f"User {current_user.username} updated session {session_id}")
             return ChatSessionInfo(
                 session_id=updated_row["session_id"],
                 last_message_timestamp=datetime.fromisoformat(updated_row["last_message_timestamp"]),
-                title=title
+                title=title,
+                system_prompt=updated_row["system_prompt"]
             )
             
-    except HTTPException: # Re-raise HTTP exceptions
-         raise
+    except HTTPException:
+        raise
     except Exception as e:
-        if conn: conn.rollback()
-        logger.error(f"Error updating session {session_id} for user {current_user.username}: {e}", exc_info=True)
+        if conn: 
+            try: conn.rollback()
+            except Exception as rb_err: logger.error(f"Rollback failed: {rb_err}")
+        logger.error(f"Error updating session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Could not update chat session")
 
 # --- STREAMING CHAT ENDPOINT and GENERATOR (Restored) ---
@@ -1339,11 +1372,26 @@ async def stream_chat_generator(
     session_id: Optional[str] = None
 ):
     current_session_id = session_id or str(uuid.uuid4())
-    response_buffer = "" # Used only for successful GPT stream final save
-    message_saved = False # Flag to track if a final message (success or error) has been saved
+    response_buffer = ""
+    message_saved = False
     model_used = "unknown"
+    system_prompt: Optional[str] = None # Variable to hold system prompt
     try:
         logger.info(f"Starting chat stream for user {user.username}, session {current_session_id}")
+        
+        # Fetch system prompt for the session before processing history
+        try:
+             with get_db() as conn_prompt:
+                  cursor_prompt = conn_prompt.cursor()
+                  cursor_prompt.execute("SELECT system_prompt FROM chat_sessions WHERE id = ? AND user_id = ?", (current_session_id, user.id))
+                  session_data = cursor_prompt.fetchone()
+                  system_prompt = session_data["system_prompt"] if session_data else None
+                  logger.debug(f"Fetched system prompt for session {current_session_id}: '{system_prompt[:50] if system_prompt else None}...'")
+        except Exception as prompt_err:
+             logger.error(f"Error fetching system prompt for session {current_session_id}: {prompt_err}", exc_info=True)
+             # Continue without system prompt if fetch fails?
+
+        # Parse history
         try:
             history = json.loads(history_json)
             if not isinstance(history, list) or not history:
@@ -1375,11 +1423,11 @@ async def stream_chat_generator(
             except Exception as e:
                 logger.exception("Stream: Error saving user message")
         else:
-             logger.warning("Stream: Last message in history was not from user.")
+            logger.warning("Stream: Last message in history was not from user.")
 
         # --- Streaming Logic --- 
         if model_id:
-            # Simulate streaming for assistants - calls chat_with_custom_model which saves messages
+            # Assistant or Custom GPT model: chat_with_custom_model handles system prompt internally
             logger.info(f"Streaming (simulated) for custom model: {model_id}")
             try:
                  chat_request = ChatRequest(
@@ -1391,31 +1439,33 @@ async def stream_chat_generator(
                  custom_model_response = await chat_with_custom_model(chat_request, user, current_session_id)
                  response_content = str(custom_model_response.get("message", "")) # Ensure string
                  model_used = custom_model_response.get("model_used", f"custom:{model_id}")
-                 message_saved = True # chat_with_custom_model saved it
-
-                 # Yield the full response as one chunk
-                 if response_content: # Only yield if there is content
+                 message_saved = True 
+                 if response_content:
                       chunk_data = {"chunk": response_content}
                       yield f"data: {json.dumps(chunk_data)}\n\n"
-                 
             except Exception as assistant_error:
                 logger.exception(f"Error during custom model (assistant) chat stream for {model_id}")
                 error_msg = f"Error with custom model: {assistant_error}"
                 error_data = {"error": error_msg}
                 yield f"data: {json.dumps(error_data)}\n\n"
-                # chat_with_custom_model should have saved the error message, so set flag
                 message_saved = True 
 
         else:
-            # Actual streaming for default GPT model
+            # Default GPT model: Prepend system prompt HERE if available
             model_name = "gpt-4o-mini"
             logger.info(f"Streaming with default model: {model_name}")
             model_used = model_name
             temp_response_buffer = ""
             try:
+                # Prepare messages including system prompt
+                final_openai_messages = openai_messages
+                if system_prompt:
+                    logger.debug(f"Prepending system prompt for default GPT stream.")
+                    final_openai_messages = [{"role": "system", "content": system_prompt}] + openai_messages
+                    
                 stream = client.chat.completions.create(
                     model=model_name,
-                    messages=openai_messages,
+                    messages=final_openai_messages, # type: ignore # Use messages with system prompt
                     stream=True
                 )
                 for chunk in stream:
@@ -1425,58 +1475,41 @@ async def stream_chat_generator(
                         yield f"data: {json.dumps(chunk_data)}\n\n"
                         temp_response_buffer += content 
                         await asyncio.sleep(0.01)
-                response_buffer = temp_response_buffer # Keep final response for saving
+                response_buffer = temp_response_buffer
             except Exception as gpt_error:
-                 logger.exception("Error during OpenAI stream")
-                 error_msg = f"Error communicating with AI model: {gpt_error}"
-                 error_data = {"error": error_msg}
-                 yield f"data: {json.dumps(error_data)}\n\n"
-                 # Save error message immediately
-                 save_chat_message(
-                    user_id=user.id, session_id=current_session_id, role="assistant",
-                    content=error_msg, model_used=f"{model_name}-error"
-                 )
-                 message_saved = True
+                logger.exception("Error during OpenAI stream")
+                error_msg = f"Error communicating with AI model: {gpt_error}"
+                error_data = {"error": error_msg}
+                yield f"data: {json.dumps(error_data)}\n\n"
+                save_chat_message(user_id=user.id, session_id=current_session_id, role="assistant", content=error_msg, model_used=f"{model_name}-error")
+                message_saved = True
 
         # --- Stream End --- 
-        # Send done signal along with the session_id used
         done_data = {"done": True, "session_id": current_session_id}
         yield f'data: {json.dumps(done_data)}\n\n'
         logger.info(f"Chat stream finished for session {current_session_id}")
         
-    except Exception as e:
-        # Catch-all for unexpected errors in the generator itself
+    except Exception as e: # Catch exceptions from the main streaming logic
         logger.exception(f"Unexpected error during stream_chat_generator for session {current_session_id}")
         try:
-            error_msg = f"An unexpected server error occurred: {e}"
+            # Use the caught exception 'e' here
+            error_msg = f"An unexpected server error occurred: {e}" 
             error_data = {"error": error_msg}
             yield f"data: {json.dumps(error_data)}\n\n"
             # Save error message if no other message was saved
             if not message_saved:
-                save_chat_message(
-                    user_id=user.id, session_id=current_session_id, role="assistant",
-                    content=error_msg, model_used="generator-error"
-                )
+                save_chat_message(user_id=user.id, session_id=current_session_id, role="assistant", content=error_msg, model_used=model_used)
                 message_saved = True
         except Exception as final_error:
             logger.error(f"CRITICAL: Failed to yield/save final error to stream: {final_error}")
             
     finally:
-        # Save the final assistant message ONLY if it was a successful GPT stream 
-        # AND hasn't already been saved due to an error.
         if response_buffer and not message_saved: 
             try:
-                 save_chat_message(
-                    user_id=user.id, 
-                    session_id=current_session_id,
-                    role="assistant",
-                    content=response_buffer, # Content accumulated during successful stream
-                    model_used=model_used
-                 )
+                 save_chat_message(user_id=user.id, session_id=current_session_id, role="assistant", content=response_buffer, model_used=model_used)
             except Exception as save_error:
                  logger.exception(f"Stream: Failed to save final assistant message for session {current_session_id}")
         elif not message_saved:
-             # Log warning if no message (success or error) was saved during the stream
              logger.warning(f"Stream: No final message was saved for session {current_session_id}")
 
 @app.get("/api/chat_stream")
