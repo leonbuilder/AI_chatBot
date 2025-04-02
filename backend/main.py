@@ -127,6 +127,20 @@ def init_db():
     )
     ''')
     
+    # Create chat_sessions table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+        id TEXT PRIMARY KEY,          -- Session ID (matches session_id in chat_messages)
+        user_id TEXT NOT NULL,        -- User who owns the session
+        title TEXT,                   -- Custom title set by user
+        created_at TEXT NOT NULL,     -- Timestamp when session was implicitly created (first message)
+        last_updated_at TEXT NOT NULL, -- Timestamp of last activity (e.g., new message, rename)
+        FOREIGN KEY (user_id) REFERENCES users (id)
+    )
+    ''')
+    # Add index for faster lookup
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_last_updated ON chat_sessions (user_id, last_updated_at)")
+    
     # Create chat_messages table if it doesn't exist
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS chat_messages (
@@ -244,6 +258,7 @@ class ChatResponse(BaseModel):
 class ChatSessionInfo(BaseModel):
     session_id: str
     last_message_timestamp: Optional[datetime] = None
+    title: Optional[str] = None # Add title field
 
 class ChatMessageHistory(ChatMessage):
     id: str
@@ -405,6 +420,75 @@ def safely_extract_assistant_text(content_array) -> str:
     except Exception as e:
         logger.error(f"Error extracting text from assistant content: {str(e)}")
         return "Error extracting response content"
+
+# --- Helper Function to Save Messages (Restored Here) ---
+def save_chat_message(
+    user_id: str, 
+    session_id: str, 
+    role: str, 
+    content: str, 
+    attachments: Optional[List[MessageAttachmentData]] = None,
+    model_used: Optional[str] = None
+) -> Optional[str]: # Return message_id or None
+    """Saves a chat message and links any provided attachments."""
+    message_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = None # Define conn outside try block
+    try:
+        with get_db() as conn: # conn is now managed by context manager
+            cursor = conn.cursor()
+            
+            # --- Upsert Session Info --- 
+            cursor.execute("""
+                INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    last_updated_at = excluded.last_updated_at;
+            """, (session_id, user_id, now_iso, now_iso))
+            logger.debug(f"Upserted session {session_id} with last_updated_at {now_iso}")
+            # --- End Upsert Session Info --- 
+
+            # Insert the main message
+            cursor.execute(
+                "INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (message_id, session_id, user_id, role, content, now_iso, model_used)
+            )
+            
+            # Link attachments if provided (only for user messages typically)
+            if attachments and role == 'user':
+                 for att_data in attachments:
+                    found_path = None
+                    try:
+                        for filename in os.listdir(CHAT_UPLOAD_DIR):
+                            if filename.startswith(att_data.temp_file_id):
+                                found_path = os.path.join(CHAT_UPLOAD_DIR, filename)
+                                break
+                    except Exception as e:
+                        logger.error(f"Error listing upload directory {CHAT_UPLOAD_DIR}: {e}", exc_info=True)
+                        continue # Skip this attachment
+
+                    if found_path and os.path.exists(found_path):
+                        attachment_id = str(uuid.uuid4())
+                        cursor.execute(
+                            """INSERT INTO chat_attachments 
+                               (id, message_id, user_id, filename, filepath, filesize, mimetype, uploaded_at) 
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (attachment_id, message_id, user_id, att_data.original_filename, found_path, att_data.filesize, att_data.mimetype, now_iso)
+                        )
+                        logger.info(f"Linked attachment {att_data.original_filename} to message {message_id}")
+                    else:
+                        logger.error(f"Could not find file for temp_id {att_data.temp_file_id} for message {message_id}.")
+            
+            conn.commit()
+            logger.info(f"Saved message {message_id} for user {user_id} in session {session_id}")
+            return message_id
+            
+    except Exception as e:
+        if conn:
+            try: conn.rollback()
+            except Exception as rb_err: logger.error(f"Rollback failed: {rb_err}")
+        logger.error(f"Failed to save chat message: {e}", exc_info=True)
+        return None
 
 @app.get("/")
 async def root():
@@ -1014,92 +1098,116 @@ async def read_users_me(current_user: UserInDB = Depends(get_current_user)):
     return User.model_validate(current_user) # Use model_validate for Pydantic v2
 
 # Chat Session Endpoints
-@app.get("/api/chat_sessions", response_model=List[ChatSessionInfo])
+class SessionListResponse(BaseModel):
+    sessions: List[ChatSessionInfo]
+
+@app.get("/api/chat_sessions", response_model=SessionListResponse)
 async def list_chat_sessions(current_user: User = Depends(get_current_user)):
-    """List all chat sessions (conversations) for the current user."""
+    """List all chat sessions for the current user, ordered by last activity."""
     sessions = []
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            # Query distinct session IDs and the latest timestamp for each session involving the user
+            # Query chat_sessions table joined with first user message for title
             cursor.execute("""
-                SELECT session_id, MAX(timestamp) as last_timestamp
-                FROM chat_messages
-                WHERE user_id = ?
-                GROUP BY session_id
-                ORDER BY last_timestamp DESC
+                SELECT 
+                    cs.id as session_id, 
+                    cs.title as custom_title, 
+                    cs.last_updated_at as last_message_timestamp,
+                    (SELECT content 
+                     FROM chat_messages 
+                     WHERE session_id = cs.id AND role = 'user' AND is_deleted = FALSE
+                     ORDER BY timestamp ASC 
+                     LIMIT 1) as first_user_message
+                FROM chat_sessions cs
+                WHERE cs.user_id = ? 
+                -- Add condition here to exclude sessions with only deleted messages?
+                -- For now, list all sessions associated with the user.
+                ORDER BY cs.last_updated_at DESC
             """, (current_user.id,))
             session_rows = cursor.fetchall()
-            
+
             for row in session_rows:
-                # Parse the timestamp string into a datetime object if needed
-                last_timestamp = None
-                if row["last_timestamp"]:
-                    try:
-                        last_timestamp = datetime.fromisoformat(row["last_timestamp"])
-                    except ValueError:
-                        logger.warning(f"Could not parse timestamp {row['last_timestamp']} for session {row['session_id']}")
-                
-                sessions.append(ChatSessionInfo(
+                 # Use custom title if set, otherwise generate from first message
+                 title = row["custom_title"]
+                 if not title:
+                     first_message = row["first_user_message"]
+                     if first_message and len(first_message) > 50:
+                         title = first_message[:47] + "..."
+                     elif first_message:
+                         title = first_message
+                     else:
+                         title = f"Chat Session ({row['session_id'][:6]}...)" # Fallback
+                      
+                 sessions.append(ChatSessionInfo(
                     session_id=row["session_id"],
-                    last_message_timestamp=last_timestamp
-                ))
-        return sessions
+                    # Ensure timestamp is parsed correctly if needed, else use string from db
+                    last_message_timestamp=datetime.fromisoformat(row["last_message_timestamp"]),
+                    title=title
+                 ))
+        logger.info(f"Retrieved {len(sessions)} sessions for user {current_user.username}")
+        return SessionListResponse(sessions=sessions)
     except Exception as e:
-        logger.error(f"Error fetching chat sessions for user {current_user.username}: {e}")
+        logger.error(f"Error listing chat sessions for user {current_user.username}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Could not retrieve chat sessions")
 
-@app.get("/api/chat_sessions/{session_id}/messages", response_model=List[ChatMessageHistory])
-async def get_chat_session_messages(
+class MessageListResponse(BaseModel):
+    messages: List[ChatMessageHistory]
+
+@app.get("/api/chat_sessions/{session_id}/messages", response_model=MessageListResponse)
+async def get_session_messages(
     session_id: str,
     current_user: User = Depends(get_current_user)
 ):
-    """Retrieve all messages for a specific chat session belonging to the current user."""
+    """Get all non-deleted messages for a specific session belonging to the current user."""
     messages = []
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            # Fetch messages first
+            # Verify the session exists and belongs to the user (optional but good practice)
+            cursor.execute("SELECT 1 FROM chat_messages WHERE session_id = ? AND user_id = ? LIMIT 1", (session_id, current_user.id))
+            if not cursor.fetchone():
+                 logger.warning(f"User {current_user.username} requested messages for session {session_id} they don't own or doesn't exist.")
+                 # Return empty list instead of 404/403, as session might be implicitly created
+                 return MessageListResponse(messages=[]) 
+                 # raise HTTPException(status_code=404, detail="Session not found or access denied")
+
+            # Fetch messages for the session
             cursor.execute("""
-                SELECT id, role, content, timestamp, model_used, edited_at
+                SELECT id, role, content, timestamp, model_used, edited_at, is_deleted
                 FROM chat_messages
                 WHERE session_id = ? AND user_id = ? AND is_deleted = FALSE
                 ORDER BY timestamp ASC
             """, (session_id, current_user.id))
             message_rows = cursor.fetchall()
-            
-            for row in message_rows:
-                message_id = row["id"]
-                
-                # Fetch attachments for this message
-                cursor.execute("""
-                    SELECT id, filename, mimetype, filesize
-                    FROM chat_attachments
-                    WHERE message_id = ? 
-                """, (message_id,))
-                attachment_rows = cursor.fetchall()
-                
-                attachments_info = []
-                for att_row in attachment_rows:
-                    # Construct the download URL dynamically
-                    # Ensure this matches the actual download endpoint route
-                    download_url = f"/api/chat/attachments/{att_row['id']}" 
-                    attachments_info.append(AttachmentInfo(
-                        id=att_row["id"],
-                        filename=att_row["filename"],
-                        mimetype=att_row["mimetype"],
-                        filesize=att_row["filesize"],
-                        download_url=download_url
-                    ))
 
-                # Parse timestamps
+            # Fetch attachments for all messages in this session efficiently
+            message_ids = [row["id"] for row in message_rows]
+            attachments_map: Dict[str, List[AttachmentInfo]] = {msg_id: [] for msg_id in message_ids}
+            if message_ids:
+                 placeholders = ',' .join('?' * len(message_ids))
+                 cursor.execute(f"""
+                     SELECT id, message_id, filename, filesize, mimetype 
+                     FROM chat_attachments 
+                     WHERE message_id IN ({placeholders})
+                 """, message_ids)
+                 attachment_rows = cursor.fetchall()
+                 for att_row in attachment_rows:
+                     msg_id = att_row["message_id"]
+                     if msg_id in attachments_map:
+                          attachments_map[msg_id].append(AttachmentInfo(
+                              id=att_row["id"],
+                              filename=att_row["filename"],
+                              mimetype=att_row["mimetype"],
+                              filesize=att_row["filesize"],
+                              # Construct download URL (relative path)
+                              download_url=f"/api/chat/attachments/{att_row['id']}" 
+                          ))
+
+            for row in message_rows:
                 timestamp = datetime.fromisoformat(row["timestamp"])
-                edited_at = None
-                if row["edited_at"]:
-                    try:
-                        edited_at = datetime.fromisoformat(row["edited_at"])
-                    except ValueError:
-                         logger.warning(f"Could not parse edited_at timestamp {row['edited_at']} for message {row['id']}")
+                edited_at = datetime.fromisoformat(row["edited_at"]) if row["edited_at"] else None
+                message_id = row["id"]
 
                 messages.append(ChatMessageHistory(
                     id=message_id,
@@ -1108,276 +1216,121 @@ async def get_chat_session_messages(
                     timestamp=timestamp,
                     model_used=row["model_used"],
                     edited_at=edited_at,
-                    is_deleted=False,
-                    attachments=attachments_info # Include fetched attachments
+                    is_deleted=row["is_deleted"],
+                    attachments=attachments_map.get(message_id, []) # Get attachments for this message
                 ))
-        return messages
+        logger.info(f"Retrieved {len(messages)} messages for session {session_id} for user {current_user.username}")
+        return MessageListResponse(messages=messages)
     except Exception as e:
-        logger.error(f"Error fetching messages for session {session_id}, user {current_user.username}: {e}")
+        logger.error(f"Error retrieving messages for session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Could not retrieve chat messages")
 
-@app.delete("/api/chat_messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_chat_message(
-    message_id: str,
+@app.delete("/api/chat_sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chat_session(
+    session_id: str,
     current_user: User = Depends(get_current_user)
 ):
-    """Soft delete a specific chat message. Only the user who sent it can delete it."""
+    """Soft delete a chat session by marking all its messages as deleted."""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
+            # First, check if the session exists and belongs to the user to prevent unauthorized deletes
+            cursor.execute("SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
+            if not cursor.fetchone():
+                # Session doesn't exist or doesn't belong to user
+                # Return 204 anyway to make it idempotent, or 404/403 if preferred
+                logger.warning(f"Attempt to delete non-existent or unauthorized session {session_id} by user {current_user.username}")
+                return # Return No Content
             
-            # First, verify the message exists and belongs to the user and is not already deleted
-            cursor.execute("""
-                SELECT user_id, role FROM chat_messages 
-                WHERE id = ? AND is_deleted = FALSE
-            """, (message_id,))
-            message_data = cursor.fetchone()
-
-            if not message_data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail="Message not found or already deleted"
-                )
-
-            # Check ownership: Only allow deletion if the user sent the message (role='user')
-            # Or, if you want users to delete assistant responses in their threads, adjust logic:
-            # if message_data["user_id"] != current_user.id:
-            if message_data["user_id"] != current_user.id or message_data["role"] != 'user':
-                 raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, 
-                    detail="You do not have permission to delete this message"
-                )
-            
-            # Perform the soft delete
-            cursor.execute("""
-                UPDATE chat_messages 
-                SET is_deleted = TRUE 
-                WHERE id = ?
-            """, (message_id,))
-            
-            conn.commit()
-            
-            # Check if the update was successful (optional, commit throws error if PK fails)
-            if cursor.rowcount == 0:
-                # This case might happen in a race condition if deleted between check and update
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail="Message not found (possibly deleted by another request)"
-                )
-            
-            logger.info(f"User {current_user.username} soft deleted message {message_id}")
-            # No content is returned on successful DELETE
-            return None 
-
-    except HTTPException: # Re-raise HTTP exceptions directly
-        raise
-    except Exception as e:
-        conn.rollback() # Ensure rollback on unexpected errors
-        logger.error(f"Error deleting message {message_id} for user {current_user.username}: {e}")
-        raise HTTPException(status_code=500, detail="Could not delete chat message")
-
-@app.patch("/api/chat_messages/{message_id}", response_model=ChatMessageHistory)
-async def edit_chat_message(
-    message_id: str,
-    update_data: ChatMessageUpdate,
-    current_user: User = Depends(get_current_user)
-):
-    """Edit the content of a specific chat message. Only user messages can be edited by their author."""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            
-            # Verify the message exists, belongs to the user, is a user message, and not deleted
-            cursor.execute("""
-                SELECT user_id, role FROM chat_messages 
-                WHERE id = ? AND is_deleted = FALSE
-            """, (message_id,))
-            message_data = cursor.fetchone()
-
-            if not message_data:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found or has been deleted")
-
-            if message_data["user_id"] != current_user.id or message_data["role"] != 'user':
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to edit this message")
-            
-            # Perform the update
-            cursor.execute("""
-                UPDATE chat_messages 
-                SET content = ?, edited_at = ? 
-                WHERE id = ?
-            """, (update_data.content, now_iso, message_id))
-            
-            conn.commit()
-
-            if cursor.rowcount == 0:
-                # Should not happen if initial check passed, but handle defensively
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found during update")
-
-            # Fetch the updated message to return it
-            cursor.execute("""
-                SELECT id, role, content, timestamp, model_used, edited_at
-                FROM chat_messages
-                WHERE id = ?
-            """, (message_id,))
-            updated_row = cursor.fetchone()
-
-            if not updated_row:
-                 # Should definitely not happen
-                 logger.error(f"Failed to fetch message {message_id} immediately after update.")
-                 raise HTTPException(status_code=500, detail="Failed to retrieve updated message")
-
-            # Parse timestamps for the response model
-            timestamp = datetime.fromisoformat(updated_row["timestamp"])
-            edited_at = datetime.fromisoformat(updated_row["edited_at"]) if updated_row["edited_at"] else None
-
-            logger.info(f"User {current_user.username} edited message {message_id}")
-            return ChatMessageHistory(
-                id=updated_row["id"],
-                role=updated_row["role"],
-                content=updated_row["content"],
-                timestamp=timestamp,
-                model_used=updated_row["model_used"],
-                edited_at=edited_at,
-                is_deleted=False # Message is not deleted if we edited it
-            )
-
-    except HTTPException: # Re-raise HTTP exceptions directly
-        raise
-    except Exception as e:
-        conn.rollback() # Ensure rollback on unexpected errors
-        logger.error(f"Error editing message {message_id} for user {current_user.username}: {e}")
-        raise HTTPException(status_code=500, detail="Could not edit chat message")
-
-@app.get("/api/chat_messages/search", response_model=List[ChatMessageHistory])
-async def search_chat_messages(
-    query: str, # Search query parameter
-    current_user: User = Depends(get_current_user)
-):
-    """Search through the current user's non-deleted chat messages."""
-    messages = []
-    if not query or len(query.strip()) < 1:
-        # Return empty list or raise 400 Bad Request if query is empty/too short
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Search query cannot be empty.")
-        # Alternatively: return []
-
-    search_term = f"%{query.strip()}%".lower() # Prepare for case-insensitive LIKE search
-    
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            # Search content using case-insensitive LIKE
-            cursor.execute("""
-                SELECT id, role, content, timestamp, model_used, edited_at
-                FROM chat_messages
-                WHERE user_id = ? 
-                  AND is_deleted = FALSE 
-                  AND lower(content) LIKE ?
-                ORDER BY timestamp DESC -- Show most recent results first
-            """, (current_user.id, search_term))
-            message_rows = cursor.fetchall()
-            
-            for row in message_rows:
-                timestamp = datetime.fromisoformat(row["timestamp"])
-                edited_at = datetime.fromisoformat(row["edited_at"]) if row["edited_at"] else None
-
-                messages.append(ChatMessageHistory(
-                    id=row["id"],
-                    role=row["role"],
-                    content=row["content"],
-                    timestamp=timestamp,
-                    model_used=row["model_used"],
-                    edited_at=edited_at,
-                    is_deleted=False
-                ))
-        return messages
-    except Exception as e:
-        logger.error(f"Error searching messages for user {current_user.username} with query '{query}': {e}")
-        raise HTTPException(status_code=500, detail="Could not perform message search")
-
-# --- Helper Function to Save Messages (Restored) ---
-def save_chat_message(
-    user_id: str, 
-    session_id: str, 
-    role: str, 
-    content: str, 
-    attachments: Optional[List[MessageAttachmentData]] = None,
-    model_used: Optional[str] = None
-) -> Optional[str]: # Return message_id or None
-    """Saves a chat message and links any provided attachments."""
-    message_id = str(uuid.uuid4())
-    now_iso = datetime.now(timezone.utc).isoformat()
-    conn = None # Define conn outside try block
-    try:
-        with get_db() as conn: # conn is now managed by context manager
-            cursor = conn.cursor()
-            
-            # Insert the main message
+            # Mark associated messages as deleted
             cursor.execute(
-                "INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (message_id, session_id, user_id, role, content, now_iso, model_used)
+                "UPDATE chat_messages SET is_deleted = TRUE WHERE session_id = ? AND user_id = ?",
+                (session_id, current_user.id)
             )
+            deleted_count = cursor.rowcount
             
-            # Link attachments if provided (only for user messages typically)
-            if attachments and role == 'user':
-                for att_data in attachments:
-                    # Find the actual file path. We only have the UUID (temp_file_id).
-                    # We need to find the file with the correct extension.
-                    found_path = None
-                    try:
-                        for filename in os.listdir(CHAT_UPLOAD_DIR):
-                            if filename.startswith(att_data.temp_file_id):
-                                found_path = os.path.join(CHAT_UPLOAD_DIR, filename)
-                                break
-                    except FileNotFoundError:
-                        logger.error(f"Upload directory {CHAT_UPLOAD_DIR} not found while linking attachments.")
-                        # Should we fail the whole message save?
-                        raise Exception(f"Upload directory missing")
-                    except Exception as e:
-                        logger.error(f"Error listing upload directory {CHAT_UPLOAD_DIR}: {e}")
-                        raise
+            # Optionally: Delete the session metadata itself from chat_sessions, or keep it
+            # For now, let's delete it to remove it from the list
+            cursor.execute("DELETE FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
+            session_deleted = cursor.rowcount > 0
 
-                    if found_path and os.path.exists(found_path):
-                        attachment_id = str(uuid.uuid4())
-                        cursor.execute(
-                            """INSERT INTO chat_attachments 
-                               (id, message_id, user_id, filename, filepath, filesize, mimetype, uploaded_at) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (
-                                attachment_id, 
-                                message_id, 
-                                user_id, 
-                                att_data.original_filename, 
-                                found_path, # Store the actual path to the file
-                                att_data.filesize, 
-                                att_data.mimetype, 
-                                now_iso # Use message timestamp as upload link time
-                            )
-                        )
-                        logger.info(f"Linked attachment {att_data.original_filename} (ID: {att_data.temp_file_id}) to message {message_id}")
-                    else:
-                        # Attachment file not found - log error, maybe skip?
-                        logger.error(f"Could not find uploaded file for temp_id {att_data.temp_file_id} when saving message {message_id}. Skipping attachment link.")
-                        # Decide if this should be a critical error - perhaps depends on application logic.
-                        # For now, we log and continue.
-            
             conn.commit()
-            logger.info(f"Saved message {message_id} for user {user_id} in session {session_id}")
-            return message_id
+            logger.info(f"User {current_user.username} deleted session {session_id}. Marked {deleted_count} messages as deleted. Session metadata deleted: {session_deleted}")
+            return # FastAPI handles 204 No Content response
             
     except Exception as e:
-        # Ensure conn is defined before trying rollback
-        if conn:
-            try:
-                conn.rollback()
-            except Exception as rb_err:
-                logger.error(f"Error during rollback after save_chat_message failure: {rb_err}")
-        logger.error(f"Failed to save chat message or link attachments: {e}")
-        # Log traceback for detailed debugging
-        logger.error(traceback.format_exc())
-        return None
+        if conn: conn.rollback() # Ensure rollback
+        logger.error(f"Error deleting session {session_id} for user {current_user.username}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not delete chat session")
 
-# --- NEW STREAMING ENDPOINT ---        
+class SessionUpdateRequest(BaseModel):
+    title: str # Allow updating the title
+
+@app.patch("/api/chat_sessions/{session_id}", response_model=ChatSessionInfo)
+async def update_chat_session(
+    session_id: str,
+    update_data: SessionUpdateRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Update a chat session (e.g., rename by setting title)."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_title = update_data.title.strip() # Trim whitespace
+    if not new_title:
+        raise HTTPException(status_code=400, detail="Title cannot be empty.")
+        
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Update the title and last_updated_at for the session belonging to the user
+            cursor.execute("""
+                UPDATE chat_sessions 
+                SET title = ?, last_updated_at = ? 
+                WHERE id = ? AND user_id = ?
+            """, (new_title, now_iso, session_id, current_user.id))
+            
+            if cursor.rowcount == 0:
+                # Session not found or doesn't belong to the user
+                raise HTTPException(status_code=404, detail="Session not found or access denied")
+            
+            conn.commit()
+            
+            # Fetch the updated session info to return
+            cursor.execute("""
+                 SELECT cs.id as session_id, cs.title as custom_title, cs.last_updated_at as last_message_timestamp,
+                        (SELECT content FROM chat_messages WHERE session_id = cs.id AND role = 'user' AND is_deleted = FALSE ORDER BY timestamp ASC LIMIT 1) as first_user_message
+                 FROM chat_sessions cs 
+                 WHERE cs.id = ?
+            """, (session_id,))
+            updated_row = cursor.fetchone()
+            
+            if not updated_row:
+                # Should not happen if update succeeded
+                raise HTTPException(status_code=500, detail="Failed to retrieve updated session info")
+                
+            # Construct response object (similar logic to list endpoint)
+            title = updated_row["custom_title"] # Should be the new title now
+            if not title:
+                 first_message = updated_row["first_user_message"]
+                 if first_message and len(first_message) > 50: title = first_message[:47] + "..."
+                 elif first_message: title = first_message
+                 else: title = f"Chat Session ({updated_row['session_id'][:6]}...)"
+                 
+            logger.info(f"User {current_user.username} updated title for session {session_id} to '{new_title}'")
+            return ChatSessionInfo(
+                session_id=updated_row["session_id"],
+                last_message_timestamp=datetime.fromisoformat(updated_row["last_message_timestamp"]),
+                title=title
+            )
+            
+    except HTTPException: # Re-raise HTTP exceptions
+         raise
+    except Exception as e:
+        if conn: conn.rollback()
+        logger.error(f"Error updating session {session_id} for user {current_user.username}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not update chat session")
+
+# --- STREAMING CHAT ENDPOINT and GENERATOR (Restored) ---
+
 async def stream_chat_generator(
     history_json: str, 
     purpose: str, 
@@ -1421,7 +1374,6 @@ async def stream_chat_generator(
                 message_saved = True # Consider user message saved successfully
             except Exception as e:
                 logger.exception("Stream: Error saving user message")
-                # Continue stream even if user message save fails?
         else:
              logger.warning("Stream: Last message in history was not from user.")
 
@@ -1487,7 +1439,9 @@ async def stream_chat_generator(
                  message_saved = True
 
         # --- Stream End --- 
-        yield f'data: {{"done": true}}\n\n'
+        # Send done signal along with the session_id used
+        done_data = {"done": True, "session_id": current_session_id}
+        yield f'data: {json.dumps(done_data)}\n\n'
         logger.info(f"Chat stream finished for session {current_session_id}")
         
     except Exception as e:
@@ -1532,24 +1486,23 @@ async def chat_stream(
     purpose: str, # Purpose from query param
     model_id: Optional[str] = None, # Optional model_id
     session_id: Optional[str] = None # Optional session_id
-): # Removed Depends(get_current_user) - auth handled manually
+): 
     """Endpoint for streaming chat responses using SSE."""
     logger.debug(f"Received chat stream request. Token: {token[:10] if token else 'None'}...")
     user = await get_user_from_token(token)
     if not user:
-        # Cannot easily return 401 for SSE, client needs to handle error message
-        # Returning an error response *within* the stream format
         async def unauthorized_stream():
             yield f'data: {{"error": "Authentication required or invalid token."}}\n\n'
         return StreamingResponse(unauthorized_stream(), media_type="text/event-stream")
     
     logger.info(f"Authenticated stream request for user: {user.username}")
     
-    # Return the streaming response using the generator
     return StreamingResponse(
         stream_chat_generator(history, purpose, user, model_id, session_id),
         media_type="text/event-stream"
     )
+
+# --- Custom Model Endpoints --- 
 
 # General Endpoints (Root, Chat)
 if __name__ == "__main__":

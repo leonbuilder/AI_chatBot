@@ -15,4 +15,11 @@ export interface CustomModel {
   instructions: string;
   created_at: string;
   updated_at: string;
+}
+
+// Add type for Session Info
+export interface SessionInfo {
+  session_id: string;
+  last_message_timestamp?: string; // ISO date string from backend
+  title?: string; // Optional: For display, might be added later to backend
 } 

@@ -13,13 +13,15 @@ import {
   FormControl,
   InputLabel,
   Button,
-  SelectChangeEvent // Import SelectChangeEvent
+  SelectChangeEvent,
+  IconButton // Import IconButton
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import LinkIcon from '@mui/icons-material/Link';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
-import LogoutIcon from '@mui/icons-material/Logout'; // Add LogoutIcon
+import LogoutIcon from '@mui/icons-material/Logout';
+import MenuIcon from '@mui/icons-material/Menu'; // Import MenuIcon
 import { CustomModel } from '../types'; // Import CustomModel type
 
 interface AppHeaderProps {
@@ -38,6 +40,7 @@ interface AppHeaderProps {
   // Add login props
   isLoggedIn: boolean;
   onLogout: () => void;
+  onToggleSidebar: () => void; // Add prop for toggling sidebar
 }
 
 const AppHeader: React.FC<AppHeaderProps> = ({
@@ -56,6 +59,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   // Destructure login props
   isLoggedIn,
   onLogout,
+  onToggleSidebar, // Destructure new prop
 }) => {
 
   const selectedModel = customModels.find(m => m.id === selectedModelId);
@@ -63,9 +67,20 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   return (
     <AppBar position="static" color="default" elevation={1}>
       <Toolbar sx={{ flexDirection: 'column', alignItems: 'stretch', pt: 1, pb: 1 }}>
-        {/* Top Row: Title & Logout Button */}
+        {/* Top Row: Toggle Button, Title & Logout Button */}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-          <Typography variant="h6">
+          {isLoggedIn && ( // Only show toggle if logged in
+             <IconButton
+                color="inherit"
+                aria-label="open drawer"
+                edge="start"
+                onClick={onToggleSidebar}
+                sx={{ mr: 1 }} // Add some margin
+             >
+                <MenuIcon />
+             </IconButton>
+          )}
+          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}> {/* Title takes remaining space */}
             AI Chatbot
           </Typography>
           {isLoggedIn && (
