@@ -39,9 +39,18 @@ interface ChatMessageListProps {
     onCopy: (content: string) => void; // Callback for copy
     messagesEndRef: React.RefObject<HTMLDivElement>; // Ref for auto-scrolling
     onEditMessage?: (messageId: string, newContent: string, isEnteringEditMode?: boolean) => Promise<void>; // Added isEnteringEditMode parameter
+    fontSize?: number; // Font size for chat messages
 }
 
-const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, onRegenerate, onCopy, messagesEndRef, onEditMessage }) => {
+const ChatMessageList: React.FC<ChatMessageListProps> = ({ 
+    messages, 
+    isLoading, 
+    onRegenerate, 
+    onCopy, 
+    messagesEndRef, 
+    onEditMessage,
+    fontSize = 16 // Default font size
+}) => {
     const theme = useTheme(); // Get the theme object
     const [showSnackbar, setShowSnackbar] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState('');
@@ -66,6 +75,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
         const match = /language-(\w+)/.exec(className || '');
         const language = match ? match[1] : 'text'; // Default to 'text' if no language specified
         const codeString = String(children).replace(/\n$/, ''); // Extract code string
+        const isDarkMode = theme.palette.mode === 'dark';
 
         const handleCopyCode = () => {
             if (copyToClipboard(codeString)) {
@@ -86,7 +96,9 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                         right: 8,
                         zIndex: 1,
                         color: theme.palette.text.secondary,
-                        backgroundColor: 'rgba(0, 0, 0, 0.03)',
+                        backgroundColor: isDarkMode 
+                            ? 'rgba(255, 255, 255, 0.05)' 
+                            : 'rgba(0, 0, 0, 0.03)',
                         padding: '4px',
                     }}
                 >
@@ -95,7 +107,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                 <Box
                     component="pre"
                     sx={{
-                        backgroundColor: '#f1f5f9',
+                        backgroundColor: isDarkMode ? '#1a2234' : '#f1f5f9',
                         borderRadius: theme.shape.borderRadius,
                         padding: theme.spacing(1.5, 2),
                         overflow: 'auto',
@@ -109,7 +121,10 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                 >
                     <Box
                         component="code"
-                        sx={{ fontFamily: 'inherit', color: theme.palette.text.primary }}
+                        sx={{ 
+                            fontFamily: 'inherit', 
+                            color: isDarkMode ? '#e2e8f0' : theme.palette.text.primary 
+                        }}
                     >
                         {codeString}
                     </Box>
@@ -121,7 +136,8 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                 component="code"
                 className={className}
                 sx={{
-                    backgroundColor: '#f1f5f9',
+                    backgroundColor: isDarkMode ? '#1a2234' : '#f1f5f9',
+                    color: isDarkMode ? '#e2e8f0' : theme.palette.text.primary,
                     borderRadius: 3,
                     padding: '0.1em 0.3em',
                     fontSize: '0.85em',
@@ -257,7 +273,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                                     </Box>
                                 </Box>
                              ) : (
-                                <Box sx={{ color: 'inherit', '& p': { margin: 0 } }}>
+                                <Box sx={{ fontSize: `${fontSize}px`, color: 'inherit', '& p': { margin: 0 } }}>
                                     <ReactMarkdown components={components}>
                                         {message.content}
                                     </ReactMarkdown>

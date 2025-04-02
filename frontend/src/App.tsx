@@ -10,6 +10,8 @@ import {
   Snackbar,
   Alert,
   SelectChangeEvent,
+  ThemeProvider,
+  CssBaseline,
 } from '@mui/material';
 import axios from 'axios';
 import { Message, CustomModel, SessionInfo } from './types';
@@ -21,6 +23,8 @@ import SessionSidebar from './components/SessionSidebar';
 import CreateModelDialog from './components/dialogs/CreateModelDialog';
 import FileUploadDialog from './components/dialogs/FileUploadDialog';
 import AddWebsiteDialog from './components/dialogs/AddWebsiteDialog';
+import SettingsDialog from './components/dialogs/SettingsDialog';
+import { getTheme } from './theme';
 
 // --- Axios Instance with Interceptor ---
 const apiClient = axios.create({
@@ -100,6 +104,12 @@ function App() {
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info' | 'warning'>('success');
   const [uploading, setUploading] = useState(false);
   const [websiteExtracting, setWebsiteExtracting] = useState(false);
+  
+  // --- Settings Dialog State ---
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+  const [fontSize, setFontSize] = useState<number>(16);
+  const [darkMode, setDarkMode] = useState<boolean>(false);
+  const [autoSuggest, setAutoSuggest] = useState<boolean>(true);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -968,254 +978,179 @@ function App() {
       return sessions.find(s => s.session_id === activeSessionId)?.system_prompt || null;
   }, [activeSessionId, sessions]);
 
-  if (!isLoggedIn) {
-    return (
-      <Container component="main" maxWidth="xs">
-        <Box
-          sx={{
-            marginTop: 8,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
+  // Handle opening settings dialog
+  const handleOpenSettings = useCallback(() => {
+    setSettingsDialogOpen(true);
+  }, []);
+
+  // Handle closing settings dialog
+  const handleCloseSettings = useCallback(() => {
+    setSettingsDialogOpen(false);
+  }, []);
+
+  // Handle purpose change from settings
+  const handlePurposeChangeFromSettings = useCallback((newPurpose: string) => {
+    setPurpose(newPurpose);
+  }, []);
+  
+  // Adapter function for system prompt changes from settings dialog
+  const handleSystemPromptChangeFromSettings = useCallback((prompt: string) => {
+    if (activeSessionId) {
+      handleUpdateSystemPrompt(activeSessionId, prompt);
+    }
+  }, [activeSessionId, handleUpdateSystemPrompt]);
+
+  // Handle font size change
+  const handleFontSizeChange = useCallback((newSize: number) => {
+    setFontSize(newSize);
+    // Save to localStorage
+    localStorage.setItem('fontSize', newSize.toString());
+  }, []);
+
+  // Handle dark mode change
+  const handleDarkModeChange = useCallback((enabled: boolean) => {
+    setDarkMode(enabled);
+    // Save to localStorage
+    localStorage.setItem('darkMode', enabled.toString());
+  }, []);
+
+  // Handle auto suggest change
+  const handleAutoSuggestChange = useCallback((enabled: boolean) => {
+    setAutoSuggest(enabled);
+    // Save to localStorage
+    localStorage.setItem('autoSuggest', enabled.toString());
+  }, []);
+
+  // Load settings from localStorage on initial load
+  useEffect(() => {
+    const savedFontSize = localStorage.getItem('fontSize');
+    if (savedFontSize) {
+      setFontSize(parseInt(savedFontSize));
+    }
+    
+    const savedDarkMode = localStorage.getItem('darkMode');
+    if (savedDarkMode) {
+      setDarkMode(savedDarkMode === 'true');
+    }
+    
+    const savedAutoSuggest = localStorage.getItem('autoSuggest');
+    if (savedAutoSuggest) {
+      setAutoSuggest(savedAutoSuggest === 'true');
+    }
+  }, []);
+
+  // Update the chat message styling based on font size
+  const chatMessageStyle = useMemo(() => ({
+    fontSize: `${fontSize}px`
+  }), [fontSize]);
+
+  // Main render logic
+  const appContent = isLoggedIn ? (
+    <Box sx={{ display: 'flex', height: '100vh' }}>
+      <SessionSidebar 
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={handleSelectSession}
+        onNewSession={handleNewSession}
+        onDeleteSession={handleDeleteSession}
+        onRenameSession={handleRenameSession}
+        loading={sessionsLoading}
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+      
+      <Container maxWidth="lg" sx={{ height: '100vh', display: 'flex', flexDirection: 'column', p: 0, flexGrow: 1 }}>
+        <AppHeader 
+          isLoggedIn={isLoggedIn}
+          username={username}
+          sessions={sessions}
+          sessionsLoading={sessionsLoading}
+          onLogout={handleLogout}
+          tabValue={tabValue}
+          onTabChange={(_event: React.SyntheticEvent, newValue: number) => setTabValue(newValue)}
+          purposes={purposes}
+          purpose={purpose}
+          onPurposeChange={(e: SelectChangeEvent<string>) => setPurpose(e.target.value)}
+          customModels={customModels}
+          selectedModelId={selectedModelId}
+          onModelSelect={(e: SelectChangeEvent<string>) => setSelectedModelId(e.target.value)}
+          onCreateModelClick={() => setModelDialogOpen(true)}
+          onUploadFileClick={() => setFileDialogOpen(true)}
+          onAddWebsiteClick={() => setWebsiteDialogOpen(true)}
+          onDeleteModelClick={(modelId: string) => {
+            if (window.confirm('Are you sure you want to delete this model?')) {
+              handleDeleteModel(modelId);
+            }
+          }}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          activeSessionId={activeSessionId}
+          activeSessionSystemPrompt={activeSessionSystemPrompt}
+          onUpdateSystemPrompt={handleUpdateSystemPrompt}
+          onOpenSettings={handleOpenSettings}
+        />
+
+        <Paper 
+          elevation={0} 
+          sx={{ 
+            flexGrow: 1,
+            display: 'flex', 
+            flexDirection: 'column', 
+            overflow: 'hidden',
+            bgcolor: 'background.default'
           }}
         >
-          <Typography component="h1" variant="h5">
-            {viewMode === 'login' ? 'Sign in' : 'Register'}
-          </Typography>
-          
-          {viewMode === 'login' ? (
-            <Box component="form" onSubmit={handleLogin} noValidate sx={{ mt: 1 }}>
-              <TextField
-                margin="normal"
-                required
-                fullWidth
-                id="username"
-                label="Username"
-                name="username"
-                autoComplete="username"
-                autoFocus
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                disabled={loginLoading}
-              />
-              <TextField
-                margin="normal"
-                required
-                fullWidth
-                name="password"
-                label="Password"
-                type="password"
-                id="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={loginLoading}
-              />
-              {loginError && (
-                <Typography color="error" variant="body2" sx={{ mt: 1 }}>
-                  {loginError}
-                </Typography>
-              )}
-              <Button
-                type="submit"
-                fullWidth
-                variant="contained"
-                sx={{ mt: 3, mb: 2 }}
-                disabled={loginLoading}
-              >
-                {loginLoading ? <CircularProgress size={24} /> : 'Sign In'}
-              </Button>
-              <Button 
-                fullWidth 
-                variant="text"
-                onClick={() => { setViewMode('register'); setLoginError(''); }}
-                sx={{ mb: 2 }}
-              >
-                Don't have an account? Register
-              </Button>
-            </Box>
-          ) : (
-            <Box component="form" onSubmit={handleRegister} noValidate sx={{ mt: 1 }}>
-              <TextField
-                margin="normal"
-                required
-                fullWidth
-                id="register-username"
-                label="Username"
-                name="register-username"
-                autoComplete="username"
-                autoFocus
-                value={registerUsername}
-                onChange={(e) => setRegisterUsername(e.target.value)}
-                disabled={registerLoading}
-              />
-              <TextField
-                margin="normal"
-                required
-                fullWidth
-                name="register-password"
-                label="Password"
-                type="password"
-                id="register-password"
-                autoComplete="new-password"
-                value={registerPassword}
-                onChange={(e) => setRegisterPassword(e.target.value)}
-                disabled={registerLoading}
-              />
-              <TextField
-                margin="normal"
-                required
-                fullWidth
-                name="confirm-password"
-                label="Confirm Password"
-                type="password"
-                id="confirm-password"
-                autoComplete="new-password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                error={registerPassword !== confirmPassword && confirmPassword !== ''}
-                helperText={registerPassword !== confirmPassword && confirmPassword !== '' ? "Passwords do not match" : ""}
-                disabled={registerLoading}
-              />
-              {registerError && (
-                <Typography color="error" variant="body2" sx={{ mt: 1 }}>
-                  {registerError}
-                </Typography>
-              )}
-              <Button
-                type="submit"
-                fullWidth
-                variant="contained"
-                sx={{ mt: 3, mb: 2 }}
-                disabled={registerLoading || (registerPassword !== confirmPassword && confirmPassword !== '')}
-              >
-                {registerLoading ? <CircularProgress size={24} /> : 'Register'}
-              </Button>
-              <Button 
-                fullWidth 
-                variant="text"
-                onClick={() => { setViewMode('login'); setRegisterError(''); }}
-                 sx={{ mb: 2 }}
-             >
-                Already have an account? Sign in
-              </Button>
-            </Box>
-          )}
-        </Box>
-         <Snackbar
-            open={snackbarOpen}
-            autoHideDuration={6000}
-            onClose={() => setSnackbarOpen(false)}
-            anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-          >
-            <Alert onClose={() => setSnackbarOpen(false)} severity={snackbarSeverity} variant="filled" sx={{ width: '100%' }}>
-              {snackbarMessage}
-            </Alert>
-          </Snackbar>
-      </Container>
-    );
-  }
-
-  return (
-    <Box sx={{ display: 'flex', height: '100vh' }}>
-       <SessionSidebar 
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelectSession={handleSelectSession}
-          onNewSession={handleNewSession}
-          onDeleteSession={handleDeleteSession}
-          onRenameSession={handleRenameSession}
-          loading={sessionsLoading}
-          isOpen={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
-       />
-       
-       <Container maxWidth="lg" sx={{ height: '100vh', display: 'flex', flexDirection: 'column', p: 0, flexGrow: 1 }}>
-          <AppHeader 
-            isLoggedIn={isLoggedIn}
-            username={null}
-            sessions={sessions}
-            sessionsLoading={sessionsLoading}
-            onLogout={handleLogout}
-            tabValue={tabValue}
-            onTabChange={(_event: React.SyntheticEvent, newValue: number) => setTabValue(newValue)}
-            purposes={purposes}
-            purpose={purpose}
-            onPurposeChange={(e: SelectChangeEvent<string>) => setPurpose(e.target.value)}
-            customModels={customModels}
-            selectedModelId={selectedModelId}
-            onModelSelect={(e: SelectChangeEvent<string>) => setSelectedModelId(e.target.value)}
-            onCreateModelClick={() => setModelDialogOpen(true)}
-            onUploadFileClick={() => setFileDialogOpen(true)}
-            onAddWebsiteClick={() => setWebsiteDialogOpen(true)}
-            onDeleteModelClick={(modelId: string) => {
-              if (window.confirm('Are you sure you want to delete this model?')) {
-                handleDeleteModel(modelId);
-              }
-            }}
-            onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-            activeSessionId={activeSessionId}
-            activeSessionSystemPrompt={activeSessionSystemPrompt}
-            onUpdateSystemPrompt={handleUpdateSystemPrompt}
+          <ChatMessageList 
+            messages={messages} 
+            isLoading={loading && !currentEventSource}
+            messagesEndRef={messagesEndRef}
+            onRegenerate={handleRegenerate}
+            onCopy={handleCopyMessageContent}
+            onEditMessage={handleEditMessage}
+            fontSize={fontSize}
           />
 
-          <Paper 
-            elevation={0} 
-            sx={{ 
-               flexGrow: 1,
-               display: 'flex', 
-               flexDirection: 'column', 
-               overflow: 'hidden',
-               bgcolor: 'background.default'
-            }}
-          >
-            <ChatMessageList 
-              messages={messages} 
-              isLoading={loading && !currentEventSource}
-              messagesEndRef={messagesEndRef}
-              onRegenerate={handleRegenerate}
-              onCopy={handleCopyMessageContent}
-              onEditMessage={handleEditMessage}
-            />
-
-            <Box sx={{ 
-              display: 'flex', 
-              justifyContent: 'center', 
-              alignItems: 'flex-end', 
-              pb: { xs: 1, sm: 2 },
-              width: '100%'
-            }}>
-               <ChatInput onSend={handleSend} loading={!!currentEventSource} /> 
-               {currentEventSource && (
-                 <Button
-                   variant="outlined"
-                   color="secondary"
-                   size="medium"
-                   onClick={() => {
-                     currentEventSource.close();
-                     setCurrentEventSource(null);
-                     setMessages(prev => prev.map(msg => {
-                        const lastMsg = prev[prev.length - 1];
-                        if (lastMsg && msg.id === lastMsg.id && lastMsg.isStreaming) {
-                          return { ...msg, isStreaming: false, content: msg.content + ' [Stopped]' };
-                        }
-                        return msg;
-                      }));
-                   }}
-                   sx={{ 
-                     height: { xs: '44px', sm: '50px' },
-                     mb: { xs: 2, sm: 3 },
-                     mr: { xs: 2, sm: 3, md: 4 },
-                     px: 3,
-                     borderRadius: '14px',
-                     fontWeight: 500
-                   }}
-                 >
-                   Stop
-                 </Button>
-               )}
-            </Box>
-          </Paper>
+          <Box sx={{ 
+            display: 'flex', 
+            justifyContent: 'center', 
+            alignItems: 'flex-end', 
+            pb: { xs: 1, sm: 2 },
+            width: '100%'
+          }}>
+            <ChatInput 
+              onSend={handleSend} 
+              loading={!!currentEventSource}
+              showSuggestions={autoSuggest}
+            /> 
+            {currentEventSource && (
+              <Button
+                variant="outlined"
+                color="secondary"
+                size="medium"
+                onClick={() => {
+                  currentEventSource.close();
+                  setCurrentEventSource(null);
+                  setMessages(prev => prev.map(msg => {
+                    const lastMsg = prev[prev.length - 1];
+                    if (lastMsg && msg.id === lastMsg.id && lastMsg.isStreaming) {
+                      return { ...msg, isStreaming: false, content: msg.content + ' [Stopped]' };
+                    }
+                    return msg;
+                  }));
+                }}
+                sx={{ 
+                  height: { xs: '44px', sm: '50px' },
+                  mb: { xs: 2, sm: 3 },
+                  mr: { xs: 2, sm: 3, md: 4 },
+                  px: 3,
+                  borderRadius: '14px',
+                  fontWeight: 500
+                }}
+              >
+                Stop
+              </Button>
+            )}
+          </Box>
+        </Paper>
       </Container>
       
       <CreateModelDialog
@@ -1260,6 +1195,23 @@ function App() {
         loading={websiteExtracting}
       />
       
+      <SettingsDialog
+        open={settingsDialogOpen}
+        onClose={handleCloseSettings}
+        purposes={purposes}
+        currentPurpose={purpose}
+        onPurposeChange={handlePurposeChangeFromSettings}
+        systemPrompt={activeSessionSystemPrompt}
+        onSystemPromptChange={handleSystemPromptChangeFromSettings}
+        activeSessionId={activeSessionId}
+        fontSize={fontSize}
+        onFontSizeChange={handleFontSizeChange}
+        darkMode={darkMode}
+        onDarkModeChange={handleDarkModeChange}
+        autoSuggest={autoSuggest}
+        onAutoSuggestChange={handleAutoSuggestChange}
+      />
+      
       <Snackbar
         open={snackbarOpen}
         autoHideDuration={6000}
@@ -1276,8 +1228,159 @@ function App() {
           {snackbarMessage}
         </Alert>
       </Snackbar>
-      
     </Box>
+  ) : (
+    <Container component="main" maxWidth="xs">
+      <Box
+        sx={{
+          marginTop: 8,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+        }}
+      >
+        <Typography component="h1" variant="h5">
+          {viewMode === 'login' ? 'Sign in' : 'Register'}
+        </Typography>
+        
+        {viewMode === 'login' ? (
+          <Box component="form" onSubmit={handleLogin} noValidate sx={{ mt: 1 }}>
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              id="username"
+              label="Username"
+              name="username"
+              autoComplete="username"
+              autoFocus
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              disabled={loginLoading}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="password"
+              label="Password"
+              type="password"
+              id="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={loginLoading}
+            />
+            {loginError && (
+              <Typography color="error" variant="body2" sx={{ mt: 1 }}>
+                {loginError}
+              </Typography>
+            )}
+            <Button
+              type="submit"
+              fullWidth
+              variant="contained"
+              sx={{ mt: 3, mb: 2 }}
+              disabled={loginLoading}
+            >
+              {loginLoading ? <CircularProgress size={24} /> : 'Sign In'}
+            </Button>
+            <Button 
+              fullWidth 
+              variant="text"
+              onClick={() => { setViewMode('register'); setLoginError(''); }}
+              sx={{ mb: 2 }}
+            >
+              Don't have an account? Register
+            </Button>
+          </Box>
+        ) : (
+          <Box component="form" onSubmit={handleRegister} noValidate sx={{ mt: 1 }}>
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              id="register-username"
+              label="Username"
+              name="register-username"
+              autoComplete="username"
+              autoFocus
+              value={registerUsername}
+              onChange={(e) => setRegisterUsername(e.target.value)}
+              disabled={registerLoading}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="register-password"
+              label="Password"
+              type="password"
+              id="register-password"
+              autoComplete="new-password"
+              value={registerPassword}
+              onChange={(e) => setRegisterPassword(e.target.value)}
+              disabled={registerLoading}
+            />
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              name="confirm-password"
+              label="Confirm Password"
+              type="password"
+              id="confirm-password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              error={registerPassword !== confirmPassword && confirmPassword !== ''}
+              helperText={registerPassword !== confirmPassword && confirmPassword !== '' ? "Passwords do not match" : ""}
+              disabled={registerLoading}
+            />
+            {registerError && (
+              <Typography color="error" variant="body2" sx={{ mt: 1 }}>
+                {registerError}
+              </Typography>
+            )}
+            <Button
+              type="submit"
+              fullWidth
+              variant="contained"
+              sx={{ mt: 3, mb: 2 }}
+              disabled={registerLoading || (registerPassword !== confirmPassword && confirmPassword !== '')}
+            >
+              {registerLoading ? <CircularProgress size={24} /> : 'Register'}
+            </Button>
+            <Button 
+              fullWidth 
+              variant="text"
+              onClick={() => { setViewMode('login'); setRegisterError(''); }}
+              sx={{ mb: 2 }}
+            >
+              Already have an account? Sign in
+            </Button>
+          </Box>
+        )}
+      </Box>
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={6000}
+        onClose={() => setSnackbarOpen(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert onClose={() => setSnackbarOpen(false)} severity={snackbarSeverity} variant="filled" sx={{ width: '100%' }}>
+          {snackbarMessage}
+        </Alert>
+      </Snackbar>
+    </Container>
+  );
+
+  // Final return with ThemeProvider wrapper
+  return (
+    <ThemeProvider theme={getTheme(darkMode ? 'dark' : 'light')}>
+      <CssBaseline />
+      {appContent}
+    </ThemeProvider>
   );
 }
 

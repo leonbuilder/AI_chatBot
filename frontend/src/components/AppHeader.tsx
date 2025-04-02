@@ -10,7 +10,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import LinkIcon from '@mui/icons-material/Link';
 import FileUploadIcon from '@mui/icons-material/FileUpload';
 import LogoutIcon from '@mui/icons-material/Logout';
-import { Edit, Save, Cancel, Settings } from '@mui/icons-material';
+import { Edit, Save, Cancel, Settings, SettingsOutlined } from '@mui/icons-material';
 import { CustomModel, SessionInfo } from '../types';
 
 // Define the props for the component
@@ -36,6 +36,7 @@ interface AppHeaderProps {
     onUpdateSystemPrompt: (sessionId: string, newPrompt: string) => void;
     onToggleSidebar: () => void;
     onLogout: () => void;
+    onOpenSettings?: () => void;
 }
 
 const AppHeader: React.FC<AppHeaderProps> = ({
@@ -59,7 +60,8 @@ const AppHeader: React.FC<AppHeaderProps> = ({
     activeSessionSystemPrompt,
     onUpdateSystemPrompt,
     onToggleSidebar,
-    onLogout
+    onLogout,
+    onOpenSettings
 }) => {
     const theme = useTheme();
     const selectedModel = customModels.find(m => m.id === selectedModelId);
@@ -128,15 +130,31 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                     </Box>
                     
                     {isLoggedIn && (
-                        <Button
-                            variant="text"
-                            onClick={onLogout}
-                            startIcon={<LogoutIcon />}
-                            size="small"
-                            sx={{ color: theme.palette.text.secondary }}
-                        >
-                            Logout
-                        </Button>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                            {onOpenSettings && (
+                                <Tooltip title="Settings">
+                                    <IconButton
+                                        size="small"
+                                        onClick={onOpenSettings}
+                                        sx={{ 
+                                            mr: 1,
+                                            color: theme.palette.text.secondary,
+                                        }}
+                                    >
+                                        <SettingsOutlined />
+                                    </IconButton>
+                                </Tooltip>
+                            )}
+                            <Button
+                                variant="text"
+                                onClick={onLogout}
+                                startIcon={<LogoutIcon />}
+                                size="small"
+                                sx={{ color: theme.palette.text.secondary }}
+                            >
+                                Logout
+                            </Button>
+                        </Box>
                     )}
                 </Box>
 
@@ -236,20 +254,18 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                     
                     {/* Tab Content */}
                     {tabValue === 0 ? (
-                        <FormControl fullWidth size="small">
-                            <InputLabel>Purpose</InputLabel>
-                            <Select
-                                value={purpose}
-                                label="Purpose"
-                                onChange={onPurposeChange}
+                        <Box sx={{ height: 56, display: 'flex', alignItems: 'center' }}>
+                            {/* Purpose selector moved to settings dialog */}
+                            <Typography 
+                                variant="body2" 
+                                sx={{ 
+                                    color: theme.palette.text.secondary, 
+                                    fontStyle: 'italic'
+                                }}
                             >
-                                {purposes.map((p) => (
-                                    <MenuItem key={p} value={p}>
-                                        {p}
-                                    </MenuItem>
-                                ))}
-                            </Select>
-                        </FormControl>
+                                Purpose: {purpose}
+                            </Typography>
+                        </Box>
                     ) : (
                         <Box>
                             <Box sx={{ display: 'flex', alignItems: 'center', mb: selectedModelId ? 1.5 : 0, gap: 1.5 }}>
