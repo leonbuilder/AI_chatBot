@@ -7,4 +7,8 @@ python-multipart==0.0.9
 requests==2.31.0
 beautifulsoup4==4.12.2
 lxml==4.9.3
-python-slugify==8.0.1 
+python-slugify==8.0.1
+passlib[bcrypt]
+python-jose[cryptography]
+aiofiles # For async file uploads
+# sqlite3  # Note: sqlite3 is built-in, usually not needed here unless specific driver version 
