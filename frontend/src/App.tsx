@@ -1178,13 +1178,19 @@ function App() {
               onEditMessage={handleEditMessage}
             />
 
-            <Box sx={{ p: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1 }}>
+            <Box sx={{ 
+              display: 'flex', 
+              justifyContent: 'center', 
+              alignItems: 'flex-end', 
+              pb: { xs: 1, sm: 2 },
+              width: '100%'
+            }}>
                <ChatInput onSend={handleSend} loading={!!currentEventSource} /> 
                {currentEventSource && (
                  <Button
                    variant="outlined"
                    color="secondary"
-                   size="small"
+                   size="medium"
                    onClick={() => {
                      currentEventSource.close();
                      setCurrentEventSource(null);
@@ -1196,7 +1202,14 @@ function App() {
                         return msg;
                       }));
                    }}
-                   sx={{ height: '40px'}}
+                   sx={{ 
+                     height: { xs: '44px', sm: '50px' },
+                     mb: { xs: 2, sm: 3 },
+                     mr: { xs: 2, sm: 3, md: 4 },
+                     px: 3,
+                     borderRadius: '14px',
+                     fontWeight: 500
+                   }}
                  >
                    Stop
                  </Button>
