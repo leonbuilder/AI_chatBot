@@ -109,6 +109,7 @@ function App() {
   const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const initialLoadComplete = useRef<boolean>(false); // Ref to track initial load
+  const titleGenerationRequested = useRef<Set<string>>(new Set()); // Track sessions where title generation has been requested
   // --- End Session History State ---
 
   const scrollToBottom = () => {
@@ -235,18 +236,71 @@ function App() {
 
   // Function to update system prompt via API
   const handleUpdateSystemPrompt = useCallback(async (sessionId: string, newPrompt: string) => {
-        if (!sessionId) return;
-        console.log(`Updating system prompt for session ${sessionId}`);
-        try {
-            const response = await apiClient.patch<SessionInfo>(`/api/chat_sessions/${sessionId}`, { system_prompt: newPrompt });
-            showSnackbar("Chat context updated.", "success");
-            // Update local session state immediately
-            setSessions(prev => prev.map(s => s.session_id === sessionId ? response.data : s));
-        } catch (error) {
-            console.error(`Error updating system prompt for session ${sessionId}:`, error);
-            showSnackbar("Failed to update chat context.", "error");
-        }
+    if (!sessionId) return;
+    console.log(`Updating system prompt for session ${sessionId}`);
+    try {
+      const response = await apiClient.patch<SessionInfo>(`/api/chat_sessions/${sessionId}`, { system_prompt: newPrompt });
+      showSnackbar("Chat context updated.", "success");
+      // Update local session state immediately
+      setSessions(prev => prev.map(s => s.session_id === sessionId ? response.data : s));
+    } catch (error) {
+      console.error(`Error updating system prompt for session ${sessionId}:`, error);
+      showSnackbar("Failed to update chat context.", "error");
+    }
   }, [showSnackbar]);
+
+  // Function to generate a session title using the AI
+  const generateSessionTitle = useCallback(async (sessionId: string, chatMessages: Message[]) => {
+    // Don't generate again if we've already requested a title for this session
+    if (titleGenerationRequested.current.has(sessionId)) {
+      return;
+    }
+    
+    try {
+      // Mark this session as having a title generation request
+      titleGenerationRequested.current.add(sessionId);
+      
+      // We need at least one user message and one AI response
+      if (chatMessages.length < 2) {
+        return;
+      }
+      
+      // Prepare a modified history where we ask the AI to generate a title
+      const historyForTitleGeneration = [
+        ...chatMessages.map(m => ({ role: m.role, content: m.content })),
+        { 
+          role: 'user', 
+          content: 'Generate a concise, descriptive title (5-7 words) for this conversation that accurately reflects its content and context. Return ONLY the title text.'
+        }
+      ];
+      
+      // Use the regular chat API to get a title suggestion
+      const response = await apiClient.post('/api/chat', {
+        messages: historyForTitleGeneration,
+        purpose: 'Generate title',
+        session_id: null // Use a separate session so this doesn't appear in the chat
+      });
+      
+      if (response.data && response.data.message) {
+        // Process the AI response to extract just the title (remove quotes, etc.)
+        let title = response.data.message.trim();
+        // Remove quotes if present
+        title = title.replace(/^["'](.*)["']$/, '$1');
+        // Truncate if too long
+        if (title.length > 50) {
+          title = title.substring(0, 47) + '...';
+        }
+        
+        console.log(`Generated title for session ${sessionId}: "${title}"`);
+        
+        // Update the session with the new title
+        await handleRenameSession(sessionId, title);
+      }
+    } catch (error) {
+      console.error('Error generating session title:', error);
+      // Don't show an error notification, as this is a background task
+    }
+  }, [handleRenameSession]);
 
   // useEffect for initial data fetching
   useEffect(() => {
@@ -363,10 +417,20 @@ function App() {
                   setActiveSessionId(completedSessionId);
                   const newSessionInfo: SessionInfo = {
                       session_id: completedSessionId,
-                      title: userMessage.content.substring(0, 50) + (userMessage.content.length > 50 ? "..." : ""), // Use the initial user message for title
+                      title: userMessage.content.substring(0, 50) + (userMessage.content.length > 50 ? "..." : ""), // Temporary title
                       last_message_timestamp: new Date().toISOString()
                   };
                   setSessions(prev => [newSessionInfo, ...prev]); // Add to top
+
+                  // After creating a new session, trigger title generation after a short delay
+                  setTimeout(() => {
+                    // Get the final messages including the new assistant response
+                    setMessages(currentMessages => {
+                      // Generate a title based on the current conversation
+                      generateSessionTitle(completedSessionId, currentMessages);
+                      return currentMessages;
+                    });
+                  }, 500); // Small delay to ensure the messages array includes the assistant response
               } else if (!errorOccurred && activeSessionId) {
                  // Existing session finished, refresh list to update timestamp/order
                  console.log("Stream done for existing session. Refreshing session list.");
@@ -395,7 +459,7 @@ function App() {
         es.close(); // Close on error
         setCurrentEventSource(null);
     };
-  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar]);
+  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar, generateSessionTitle]);
   
   const handleRegenerate = useCallback((messageIdToRegenerate: string) => {
     if (!isLoggedIn || !activeSessionId) {

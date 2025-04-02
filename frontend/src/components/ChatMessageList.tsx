@@ -4,13 +4,8 @@ import { PersonOutline, AssistantOutlined, Replay, ContentCopy } from '@mui/icon
 import { Message } from '../types'; // Import the Message type
 import { format } from 'date-fns'; // Import date formatting library
 import ReactMarkdown from 'react-markdown';
-// Use type assertion for SyntaxHighlighter to avoid JSX compatibility issues
-import { Prism } from 'react-syntax-highlighter';
-import { coy } from 'react-syntax-highlighter/dist/esm/styles/prism'; // Choose a style
 import FileDownloadIcon from '@mui/icons-material/FileDownload'; // For download button
-
-// Define SyntaxHighlighter with type assertion to fix JSX compatibility issues
-const SyntaxHighlighter = Prism as any;
+import copy from 'copy-to-clipboard'; // For copy-to-clipboard functionality
 
 // Helper function to copy text to clipboard
 const copyToClipboard = (text: string): boolean => {
@@ -84,14 +79,31 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
                 >
                     <ContentCopy fontSize="small" />
                 </IconButton>
-                <SyntaxHighlighter
-                    style={coy}
-                    language={language}
-                    PreTag="div"
-                    {...props}
+                {/* Simple styled code block instead of SyntaxHighlighter */}
+                <Box
+                    component="pre"
+                    sx={{
+                        backgroundColor: '#f5f5f5',
+                        borderRadius: '4px',
+                        padding: '16px',
+                        overflow: 'auto',
+                        fontSize: '14px',
+                        lineHeight: '1.5',
+                        fontFamily: 'Consolas, Monaco, "Andale Mono", "Ubuntu Mono", monospace',
+                        margin: 0,
+                        whiteSpace: 'pre-wrap',
+                    }}
                 >
-                    {codeString}
-                </SyntaxHighlighter>
+                    <Box
+                        component="code"
+                        sx={{
+                            fontFamily: 'inherit',
+                            color: '#333'
+                        }}
+                    >
+                        {codeString}
+                    </Box>
+                </Box>
             </Box>
         ) : (
             <code className={className} {...props}>
