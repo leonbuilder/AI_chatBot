@@ -44,6 +44,8 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, isLoading, 
     const [showSnackbar, setShowSnackbar] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState('');
 
+    console.log('Messages in ChatMessageList:', messages.map(msg => ({ id: msg.id, role: msg.role })));
+
     // Custom renderer for code blocks
     const CodeRenderer = ({ node, inline, className, children, ...props }: any) => {
         const match = /language-(\w+)/.exec(className || '');

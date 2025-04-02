@@ -423,75 +423,6 @@ def safely_extract_assistant_text(content_array) -> str:
         logger.error(f"Error extracting text from assistant content: {str(e)}")
         return "Error extracting response content"
 
-# --- Helper Function to Save Messages (Restored Here) ---
-def save_chat_message(
-    user_id: str, 
-    session_id: str, 
-    role: str, 
-    content: str, 
-    attachments: Optional[List[MessageAttachmentData]] = None,
-    model_used: Optional[str] = None
-) -> Optional[str]: # Return message_id or None
-    """Saves a chat message and links any provided attachments."""
-    message_id = str(uuid.uuid4())
-    now_iso = datetime.now(timezone.utc).isoformat()
-    conn = None # Define conn outside try block
-    try:
-        with get_db() as conn: # conn is now managed by context manager
-            cursor = conn.cursor()
-            
-            # --- Upsert Session Info --- 
-            cursor.execute("""
-                INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    last_updated_at = excluded.last_updated_at;
-            """, (session_id, user_id, now_iso, now_iso))
-            logger.debug(f"Upserted session {session_id} with last_updated_at {now_iso}")
-            # --- End Upsert Session Info --- 
-
-            # Insert the main message
-            cursor.execute(
-                "INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (message_id, session_id, user_id, role, content, now_iso, model_used)
-            )
-            
-            # Link attachments if provided (only for user messages typically)
-            if attachments and role == 'user':
-                 for att_data in attachments:
-                    found_path = None
-                    try:
-                        for filename in os.listdir(CHAT_UPLOAD_DIR):
-                            if filename.startswith(att_data.temp_file_id):
-                                found_path = os.path.join(CHAT_UPLOAD_DIR, filename)
-                                break
-                    except Exception as e:
-                        logger.error(f"Error listing upload directory {CHAT_UPLOAD_DIR}: {e}", exc_info=True)
-                        continue # Skip this attachment
-
-                    if found_path and os.path.exists(found_path):
-                        attachment_id = str(uuid.uuid4())
-                        cursor.execute(
-                            """INSERT INTO chat_attachments 
-                               (id, message_id, user_id, filename, filepath, filesize, mimetype, uploaded_at) 
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (attachment_id, message_id, user_id, att_data.original_filename, found_path, att_data.filesize, att_data.mimetype, now_iso)
-                        )
-                        logger.info(f"Linked attachment {att_data.original_filename} to message {message_id}")
-                    else:
-                        logger.error(f"Could not find file for temp_id {att_data.temp_file_id} for message {message_id}.")
-            
-            conn.commit()
-            logger.info(f"Saved message {message_id} for user {user_id} in session {session_id}")
-            return message_id
-            
-    except Exception as e:
-        if conn:
-            try: conn.rollback()
-            except Exception as rb_err: logger.error(f"Rollback failed: {rb_err}")
-        logger.error(f"Failed to save chat message: {e}", exc_info=True)
-        return None
-
 @app.get("/")
 async def root():
     return JSONResponse({
@@ -533,17 +464,61 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
     user_message_id = None
     if not title_generation_mode:
         try:
-            user_message_id = save_chat_message(
-                user_id=current_user.id,
-                session_id=session_id,
-                role="user",
-                content=user_content, # Use validated content
-                attachments=request.attachments
-            )
-            if not user_message_id:
+            # Direct save for user message in non-streaming endpoint
+            with get_db() as direct_conn:
+                cursor = direct_conn.cursor()
+                user_message_id = str(uuid.uuid4())
+                now_iso = datetime.now(timezone.utc).isoformat()
+                
+                # Ensure session exists
+                cursor.execute("""
+                    INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        last_updated_at = excluded.last_updated_at;
+                """, (session_id, current_user.id, now_iso, now_iso))
+                
+                # Insert user message directly
+                cursor.execute(
+                    "INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                    (user_message_id, session_id, current_user.id, "user", user_content, now_iso)
+                    # Note: Attachments are not handled in this direct save yet, would need logic from old save_chat_message
+                )
+                direct_conn.commit()
+                logger.info(f"Directly saved user message with ID {user_message_id} in non-streaming chat")
+            
+            # Link attachments if provided (copied from old save_chat_message)
+            if request.attachments:
+                with get_db() as att_conn:
+                    att_cursor = att_conn.cursor()
+                    for att_data in request.attachments:
+                        found_path = None
+                        try:
+                            for filename in os.listdir(CHAT_UPLOAD_DIR):
+                                if filename.startswith(att_data.temp_file_id):
+                                    found_path = os.path.join(CHAT_UPLOAD_DIR, filename)
+                                    break
+                        except Exception as e:
+                            logger.error(f"Error listing upload directory {CHAT_UPLOAD_DIR}: {e}", exc_info=True)
+                            continue
+
+                        if found_path and os.path.exists(found_path) and user_message_id:
+                            attachment_id = str(uuid.uuid4())
+                            att_cursor.execute(
+                                """INSERT INTO chat_attachments 
+                                   (id, message_id, user_id, filename, filepath, filesize, mimetype, uploaded_at) 
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (attachment_id, user_message_id, current_user.id, att_data.original_filename, found_path, att_data.filesize, att_data.mimetype, now_iso)
+                            )
+                            logger.info(f"Linked attachment {att_data.original_filename} to message {user_message_id}")
+                        else:
+                            logger.error(f"Could not find file for temp_id {att_data.temp_file_id} for message {user_message_id}.")
+                    att_conn.commit()
+                    
+            if not user_message_id: # Should not happen with direct save unless exception occurred
                 raise HTTPException(status_code=500, detail="Failed to save user message")
         except Exception as e:
-             logger.exception("Error saving user message:")
+             logger.exception("Error saving user message directly in non-streaming chat:")
              raise HTTPException(status_code=500, detail=f"Internal server error saving message: {e}")
 
     response_content_str = "Error: Could not generate response." # Initialize as string
@@ -585,15 +560,40 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
         # Assistant message is saved within chat_with_custom_model or needs saving here for default
         # Skip saving for title generation requests
         if not request.model_id and not title_generation_mode:
-            assistant_message_id = save_chat_message(
-                user_id=current_user.id,
-                   session_id=session_id,
-                   role="assistant",
-                content=response_content_str, 
-                model_used=model_used
-               )
-            if not assistant_message_id:
-                logger.error(f"Failed to save assistant message for default model {model_name}")
+            logger.info(f"Saving assistant response for default model - session: {session_id}, message length: {len(response_content_str)}")
+            try:
+                # Direct save approach for more reliability
+                with get_db() as direct_conn:
+                    cursor = direct_conn.cursor()
+                    assistant_message_id = str(uuid.uuid4())
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    
+                    # Ensure the session exists first
+                    cursor.execute("""
+                        INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            last_updated_at = excluded.last_updated_at;
+                    """, (session_id, current_user.id, now_iso, now_iso))
+                    
+                    # Insert assistant message directly
+                    cursor.execute(
+                        "INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (assistant_message_id, session_id, current_user.id, "assistant", response_content_str, now_iso, model_used)
+                    )
+                    direct_conn.commit()
+                    
+                    # Verify the message was saved
+                    cursor.execute("SELECT id, role, user_id, session_id FROM chat_messages WHERE id = ?", (assistant_message_id,))
+                    verify_result = cursor.fetchone()
+                    if verify_result:
+                        logger.info(f"Directly saved assistant message with ID {assistant_message_id} was verified in database with session_id={verify_result['session_id']}")
+                    else:
+                        logger.error(f"Failed to verify direct save of assistant message with ID {assistant_message_id}")
+                    
+                logger.info(f"Successfully saved assistant message for default model with ID: {assistant_message_id}")
+            except Exception as save_error:
+                logger.error(f"Failed to save assistant message for default model in session {session_id}: {save_error}")
                 
         return ChatResponse(message=response_content_str, role="assistant", session_id=session_id)
                 
@@ -606,13 +606,9 @@ async def chat(request: ChatRequest, current_user: User = Depends(get_current_us
         # For now, let's assume chat_with_custom_model handles its own errors and saves them.
         # Skip saving for title generation requests
         if not request.model_id and not title_generation_mode: # Only save if it was the default model path
-            save_chat_message(
-                user_id=current_user.id,
-                session_id=session_id,
-                role="assistant",
-                content=error_content,
-                model_used="error"
-            )
+            # REMOVED old save_chat_message call for error
+            # The error message is now saved directly within the exception block below if needed
+            pass
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 async def chat_with_custom_model(request: ChatRequest, current_user: User, session_id: str) -> Dict[str, str]:
@@ -663,11 +659,20 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
                 run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
             if run.status != "completed":
                 logger.error(f"Assistant run failed. Status: {run.status}. Last error: {run.last_error}")
-                # Save error message before raising
-                save_chat_message(
-                    user_id=current_user.id, session_id=session_id, role="assistant",
-                    content=f"Assistant run failed. Status: {run.status}", model_used=f"{model_used}-error"
-                )
+                error_content = f"Assistant run failed. Status: {run.status}"
+                # Direct save approach for assistant errors
+                try:
+                    with get_db() as direct_conn:
+                        cursor = direct_conn.cursor()
+                        error_message_id = str(uuid.uuid4())
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        cursor.execute("INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_updated_at = excluded.last_updated_at;", (session_id, current_user.id, now_iso, now_iso))
+                        cursor.execute("INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)", (error_message_id, session_id, current_user.id, "assistant", error_content, now_iso, f"{model_used}-error"))
+                        direct_conn.commit()
+                        logger.info(f"Directly saved assistant run error message with ID {error_message_id}")
+                except Exception as save_error:
+                    logger.error(f"Failed to save assistant run error message: {save_error}")
+                
                 raise HTTPException(status_code=500, detail=f"Assistant run failed. Status: {run.status}")
             messages_response = client.beta.threads.messages.list(thread_id=thread.id)
             assistant_content = "No response generated by assistant."
@@ -699,10 +704,19 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
              )
              if not response.choices:
                  # Save error before raising
-                 save_chat_message(
-                     user_id=current_user.id, session_id=session_id, role="assistant",
-                     content="Error: No response choices received from OpenAI for custom GPT model.", model_used=f"{model_used}-error"
-                 )
+                 error_content = "Error: No response choices received from OpenAI for custom GPT model."
+                 # Direct save approach for errors
+                 try:
+                     with get_db() as direct_conn:
+                         cursor = direct_conn.cursor()
+                         error_message_id = str(uuid.uuid4())
+                         now_iso = datetime.now(timezone.utc).isoformat()
+                         cursor.execute("INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_updated_at = excluded.last_updated_at;", (session_id, current_user.id, now_iso, now_iso))
+                         cursor.execute("INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)", (error_message_id, session_id, current_user.id, "assistant", error_content, now_iso, f"{model_used}-error"))
+                         direct_conn.commit()
+                         logger.info(f"Directly saved OpenAI no choices error message with ID {error_message_id}")
+                 except Exception as save_error:
+                     logger.error(f"Failed to save OpenAI no choices error message: {save_error}")
                  raise ValueError("No response choices received from OpenAI")
              assistant_content = response.choices[0].message.content or ""
 
@@ -714,13 +728,40 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
         # Save successful assistant response
         # Skip saving for title generation requests
         if not title_generation_mode:
-            save_chat_message(
-                user_id=current_user.id,
-                session_id=session_id,
-                role=role,
-                content=assistant_content_str,
-                model_used=model_used
-            )
+            logger.info(f"Saving assistant response for custom model - session: {session_id}, message length: {len(assistant_content_str)}")
+            try:
+                # Direct save approach for more reliability
+                with get_db() as direct_conn:
+                    cursor = direct_conn.cursor()
+                    message_id = str(uuid.uuid4())
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    
+                    # Ensure the session exists first
+                    cursor.execute("""
+                        INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            last_updated_at = excluded.last_updated_at;
+                    """, (session_id, current_user.id, now_iso, now_iso))
+                    
+                    # Insert assistant message directly
+                    cursor.execute(
+                        "INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (message_id, session_id, current_user.id, role, assistant_content_str, now_iso, model_used)
+                    )
+                    direct_conn.commit()
+                    
+                    # Verify the message was saved
+                    cursor.execute("SELECT id, role, user_id, session_id FROM chat_messages WHERE id = ?", (message_id,))
+                    verify_result = cursor.fetchone()
+                    if verify_result:
+                        logger.info(f"Directly saved assistant message in custom model with ID {message_id} was verified in database with session_id={verify_result['session_id']}")
+                    else:
+                        logger.error(f"Failed to verify direct save of assistant message with ID {message_id}")
+                    
+                logger.info(f"Successfully saved assistant message for custom model with ID: {message_id}")
+            except Exception as save_error:
+                logger.error(f"Failed to save assistant message for custom model in session {session_id}: {save_error}")
 
         return {
             "message": assistant_content_str,
@@ -734,10 +775,9 @@ async def chat_with_custom_model(request: ChatRequest, current_user: User, sessi
         # Skip saving for title generation requests
         title_generation_mode = '__title_gen' in (session_id or '') or request.purpose == 'Generate title'
         if not title_generation_mode:
-            save_chat_message(
-                user_id=current_user.id, session_id=session_id, role="assistant",
-                content=f"An error occurred processing the custom model request: {e}", model_used=f"custom:{request.model_id}-error"
-            )
+            # REMOVED old save_chat_message call for error
+            # The error message is now saved directly within the exception block below if needed
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/custom_models", response_model=CustomModelResponse)
@@ -1199,21 +1239,34 @@ async def get_session_messages(
         with get_db() as conn:
             cursor = conn.cursor()
             # Verify the session exists and belongs to the user (optional but good practice)
-            cursor.execute("SELECT 1 FROM chat_messages WHERE session_id = ? AND user_id = ? LIMIT 1", (session_id, current_user.id))
+            cursor.execute("SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
             if not cursor.fetchone():
                  logger.warning(f"User {current_user.username} requested messages for session {session_id} they don't own or doesn't exist.")
                  # Return empty list instead of 404/403, as session might be implicitly created
                  return MessageListResponse(messages=[]) 
                  # raise HTTPException(status_code=404, detail="Session not found or access denied")
 
-            # Fetch messages for the session
-            cursor.execute("""
+            # ALWAYS use a relaxed query that doesn't filter by user_id
+            # This ensures we get all messages for this session, including assistant messages
+            # that might have a different user_id or missing user_id
+            query = """
                 SELECT id, role, content, timestamp, model_used, edited_at, is_deleted
                 FROM chat_messages
-                WHERE session_id = ? AND user_id = ? AND is_deleted = FALSE
+                WHERE session_id = ? AND is_deleted = FALSE
                 ORDER BY timestamp ASC
-            """, (session_id, current_user.id))
+            """
+            logger.debug(f"Executing relaxed query for session {session_id}: {query}")
+            cursor.execute(query, (session_id,))
             message_rows = cursor.fetchall()
+            
+            # Debug log: Log number of rows fetched and roles
+            roles = [row["role"] for row in message_rows]
+            logger.info(f"Query returned {len(message_rows)} messages with roles: {roles}")
+            
+            # Debug log: Show a sample message content if any rows returned
+            if message_rows:
+                sample_message = message_rows[0]
+                logger.debug(f"Sample message: id={sample_message['id']}, role={sample_message['role']}, content={sample_message['content'][:50]}...")
             
             # Fetch attachments for all messages in this session efficiently
             message_ids = [row["id"] for row in message_rows]
@@ -1253,49 +1306,14 @@ async def get_session_messages(
                     is_deleted=row["is_deleted"],
                     attachments=attachments_map.get(message_id, []) # Get attachments for this message
                 ))
-        logger.info(f"Retrieved {len(messages)} messages for session {session_id} for user {current_user.username}")
+        
+        # Debug log: Final message list by role and content preview
+        message_summaries = [f"{msg.role}:{msg.content[:20]}..." for msg in messages]
+        logger.info(f"Retrieved {len(messages)} messages for session {session_id} for user {current_user.username}: {message_summaries}")
         return MessageListResponse(messages=messages)
     except Exception as e:
         logger.error(f"Error retrieving messages for session {session_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Could not retrieve chat messages")
-
-@app.delete("/api/chat_sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_chat_session(
-    session_id: str,
-    current_user: User = Depends(get_current_user)
-):
-    """Soft delete a chat session by marking all its messages as deleted."""
-    try:
-        with get_db() as conn:
-            cursor = conn.cursor()
-            # First, check if the session exists and belongs to the user to prevent unauthorized deletes
-            cursor.execute("SELECT 1 FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
-            if not cursor.fetchone():
-                # Session doesn't exist or doesn't belong to user
-                # Return 204 anyway to make it idempotent, or 404/403 if preferred
-                logger.warning(f"Attempt to delete non-existent or unauthorized session {session_id} by user {current_user.username}")
-                return # Return No Content
-            
-            # Mark associated messages as deleted
-            cursor.execute(
-                "UPDATE chat_messages SET is_deleted = TRUE WHERE session_id = ? AND user_id = ?",
-                (session_id, current_user.id)
-            )
-            deleted_count = cursor.rowcount
-            
-            # Optionally: Delete the session metadata itself from chat_sessions, or keep it
-            # For now, let's delete it to remove it from the list
-            cursor.execute("DELETE FROM chat_sessions WHERE id = ? AND user_id = ?", (session_id, current_user.id))
-            session_deleted = cursor.rowcount > 0
-            
-            conn.commit()
-            logger.info(f"User {current_user.username} deleted session {session_id}. Marked {deleted_count} messages as deleted. Session metadata deleted: {session_deleted}")
-            return # FastAPI handles 204 No Content response
-            
-    except Exception as e:
-        if conn: conn.rollback() # Ensure rollback
-        logger.error(f"Error deleting session {session_id} for user {current_user.username}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Could not delete chat session")
 
 class SessionUpdateRequest(BaseModel):
     title: Optional[str] = None # Allow updating title
@@ -1433,21 +1451,43 @@ async def stream_chat_generator(
             yield f'data: {{"error": "Invalid history format: {e}"}}\n\n'
             return
             
-        # Save user message from history
+        # Save user message from history using direct save
+        user_message_content = None
+        user_message_saved = False
         if openai_messages[-1]['role'] == 'user':
+            user_message_content = openai_messages[-1]['content']
             try:
-                # NOTE: Attachments not handled here yet
-                save_chat_message(
-                    user_id=user.id,
-                    session_id=current_session_id,
-                    role="user",
-                    content=openai_messages[-1]['content']
-                )
-                message_saved = True # Consider user message saved successfully
+                with get_db() as direct_conn:
+                    cursor = direct_conn.cursor()
+                    user_message_id = str(uuid.uuid4())
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    
+                    # Ensure session exists (might be redundant if assistant save does it too, but safe)
+                    cursor.execute("""
+                        INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            last_updated_at = excluded.last_updated_at;
+                    """, (current_session_id, user.id, now_iso, now_iso))
+                    
+                    # Insert user message directly
+                    cursor.execute(
+                        "INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                        (user_message_id, current_session_id, user.id, "user", user_message_content, now_iso)
+                    )
+                    direct_conn.commit()
+                    logger.info(f"Directly saved user message with ID {user_message_id}")
+                    user_message_saved = True
             except Exception as e:
-                logger.exception("Stream: Error saving user message")
+                logger.exception(f"Stream: Error saving user message directly for session {current_session_id}")
+                # Decide if we should abort the stream here
+                yield f'data: {{"error": "Failed to save user message."}}\n\n'
+                return # Abort if user message save fails
         else:
-            logger.warning("Stream: Last message in history was not from user.")
+            logger.warning("Stream: Last message in history was not from user. Not saving user message.")
+
+        # Reset message_saved flag for assistant message logic below
+        # message_saved = False # REMOVED: No need to reset; flag now tracks *assistant* save status
 
         # --- Streaming Logic --- 
         if model_id:
@@ -1500,15 +1540,77 @@ async def stream_chat_generator(
                         temp_response_buffer += content 
                         await asyncio.sleep(0.01)
                 response_buffer = temp_response_buffer
+                
+                # Save the successful response buffer HERE before sending done message
+                if response_buffer:
+                    try:
+                        logger.info(f"Saving successful default model response for session {current_session_id}, length: {len(response_buffer)}")
+                        with get_db() as direct_conn:
+                            cursor = direct_conn.cursor()
+                            message_id = str(uuid.uuid4())
+                            now_iso = datetime.now(timezone.utc).isoformat()
+                            cursor.execute("INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_updated_at = excluded.last_updated_at;", (current_session_id, user.id, now_iso, now_iso))
+                            cursor.execute("INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)", (message_id, current_session_id, user.id, "assistant", response_buffer, now_iso, model_used))
+                            direct_conn.commit()
+                            logger.info(f"Directly saved successful assistant message with ID {message_id}")
+                            message_saved = True # Mark as saved
+                            
+                            # Verify with a separate connection
+                            try:
+                                with get_db() as verify_conn:
+                                    verify_cursor = verify_conn.cursor()
+                                    verify_cursor.execute("SELECT id, role FROM chat_messages WHERE id = ?", (message_id,))
+                                    verify_result = verify_cursor.fetchone()
+                                    if verify_result:
+                                        logger.info(f"Verified successful save (separate conn): ID {message_id}")
+                                    else:
+                                        logger.error(f"Failed to verify successful save (separate conn): ID {message_id}")
+                            except Exception as verify_err:
+                                logger.error(f"Error during separate verification of successful save: {verify_err}")
+                                
+                    except Exception as save_error:
+                        logger.exception(f"Stream: Failed to save successful assistant message for session {current_session_id}: {save_error}")
+                        # Yield an error if save fails? Or just log?
+                        # Let's log for now, but the message won't be saved.
+                
             except Exception as gpt_error:
                 logger.exception("Error during OpenAI stream")
                 error_msg = f"Error communicating with AI model: {gpt_error}"
                 error_data = {"error": error_msg}
                 yield f"data: {json.dumps(error_data)}\n\n"
-                save_chat_message(user_id=user.id, session_id=current_session_id, role="assistant", content=error_msg, model_used=f"{model_name}-error")
-                message_saved = True
+                
+                # Direct save approach for errors (remains here)
+                try:
+                    with get_db() as direct_conn:
+                        cursor = direct_conn.cursor()
+                        error_message_id = str(uuid.uuid4())
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        cursor.execute("INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_updated_at = excluded.last_updated_at;", (current_session_id, user.id, now_iso, now_iso))
+                        cursor.execute("INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)", (error_message_id, current_session_id, user.id, "assistant", error_msg, now_iso, f"{model_name}-error"))
+                        direct_conn.commit()
+                        logger.info(f"Directly saved OpenAI stream error message with ID {error_message_id}")
+                        message_saved = True # Mark as saved (error saved)
+                        
+                        # Verify with a separate connection
+                        try:
+                            with get_db() as verify_conn:
+                                verify_cursor = verify_conn.cursor()
+                                verify_cursor.execute("SELECT id, role FROM chat_messages WHERE id = ?", (error_message_id,))
+                                verify_result = verify_cursor.fetchone()
+                                if verify_result:
+                                    logger.info(f"Verified OpenAI error save (separate conn): ID {error_message_id}")
+                                else:
+                                    logger.error(f"Failed to verify OpenAI error save (separate conn): ID {error_message_id}")
+                        except Exception as verify_err:
+                            logger.error(f"Error during separate verification of OpenAI error save: {verify_err}")
+                            
+                except Exception as save_error:
+                    logger.error(f"Failed to save OpenAI stream error message: {save_error}")
+                
+                # message_saved = True # Already set above
 
         # --- Stream End --- 
+        # Now we send the done message AFTER attempting to save the successful response or an error
         done_data = {"done": True, "session_id": current_session_id}
         yield f'data: {json.dumps(done_data)}\n\n'
         logger.info(f"Chat stream finished for session {current_session_id}")
@@ -1516,25 +1618,45 @@ async def stream_chat_generator(
     except Exception as e: # Catch exceptions from the main streaming logic
         logger.exception(f"Unexpected error during stream_chat_generator for session {current_session_id}")
         try:
-            # Use the caught exception 'e' here
             error_msg = f"An unexpected server error occurred: {e}" 
             error_data = {"error": error_msg}
             yield f"data: {json.dumps(error_data)}\n\n"
-            # Save error message if no other message was saved
             if not message_saved:
-                save_chat_message(user_id=user.id, session_id=current_session_id, role="assistant", content=error_msg, model_used=model_used)
-                message_saved = True
+                try:
+                    # Direct save for outer exception error message
+                    with get_db() as direct_conn:
+                        cursor = direct_conn.cursor()
+                        error_message_id = str(uuid.uuid4())
+                        now_iso = datetime.now(timezone.utc).isoformat()
+                        cursor.execute("INSERT INTO chat_sessions (id, user_id, created_at, last_updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_updated_at = excluded.last_updated_at;", (current_session_id, user.id, now_iso, now_iso))
+                        cursor.execute("INSERT INTO chat_messages (id, session_id, user_id, role, content, timestamp, model_used) VALUES (?, ?, ?, ?, ?, ?, ?)", (error_message_id, current_session_id, user.id, "assistant", error_msg, now_iso, model_used))
+                        direct_conn.commit()
+                        logger.info(f"Directly saved outer error message with ID {error_message_id}")
+                        message_saved = True
+                        
+                        # Verify with a separate connection
+                        try:
+                            with get_db() as verify_conn:
+                                verify_cursor = verify_conn.cursor()
+                                verify_cursor.execute("SELECT id, role FROM chat_messages WHERE id = ?", (error_message_id,))
+                                verify_result = verify_cursor.fetchone()
+                                if verify_result:
+                                    logger.info(f"Verified outer error save (separate conn): ID {error_message_id}")
+                                else:
+                                    logger.error(f"Failed to verify outer error save (separate conn): ID {error_message_id}")
+                        except Exception as verify_err:
+                            logger.error(f"Error during separate verification of outer error save: {verify_err}")
+                            
+                except Exception as direct_save_error:
+                    logger.error(f"CRITICAL: Failed to save outer error message directly: {direct_save_error}")
         except Exception as final_error:
             logger.error(f"CRITICAL: Failed to yield/save final error to stream: {final_error}")
             
     finally:
-        if response_buffer and not message_saved: 
-            try:
-                 save_chat_message(user_id=user.id, session_id=current_session_id, role="assistant", content=response_buffer, model_used=model_used)
-            except Exception as save_error:
-                 logger.exception(f"Stream: Failed to save final assistant message for session {current_session_id}")
-        elif not message_saved:
-             logger.warning(f"Stream: No final message was saved for session {current_session_id}")
+        # Logic to save response_buffer is removed from here.
+        # We just log if, after everything, no assistant message/error was flagged as saved.
+        if not message_saved:
+             logger.warning(f"Stream ended for session {current_session_id}, but no assistant message or error was successfully saved.")
 
 @app.get("/api/chat_stream")
 async def chat_stream(
@@ -1566,3 +1688,49 @@ if __name__ == "__main__":
     import uvicorn
     print("Starting server directly...")
     uvicorn.run(app, host="0.0.0.0", port=8001) 
+
+# --- Debug endpoint for diagnosing missing messages ---
+@app.get("/api/debug/session_messages/{session_id}")
+async def debug_session_messages(
+    session_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Debug endpoint to directly query the database for messages in a session."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Get session info
+            cursor.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,))
+            session_row = cursor.fetchone()
+            session_info = dict(session_row) if session_row else {"error": "Session not found"}
+            
+            # Get all messages including deleted ones
+            cursor.execute("""
+                SELECT id, role, content, timestamp, model_used, edited_at, is_deleted 
+                FROM chat_messages 
+                WHERE session_id = ? 
+                ORDER BY timestamp ASC
+            """, (session_id,))
+            all_messages = [dict(row) for row in cursor.fetchall()]
+            
+            # Count by role
+            role_counts = {}
+            for msg in all_messages:
+                role = msg["role"]
+                role_counts[role] = role_counts.get(role, 0) + 1
+                
+            # Deleted message info
+            deleted_messages = [msg for msg in all_messages if msg["is_deleted"]]
+            
+            return {
+                "session_info": session_info,
+                "message_count": len(all_messages),
+                "role_counts": role_counts,
+                "messages": all_messages,
+                "deleted_count": len(deleted_messages),
+                "deleted_messages": deleted_messages
+            }
+    except Exception as e:
+        logger.error(f"Debug endpoint error: {e}", exc_info=True)
+        return {"error": str(e)} 

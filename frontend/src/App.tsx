@@ -158,23 +158,58 @@ function App() {
     if (!isLoggedIn) return;
     setLoading(true);
     console.log(`Fetching messages for session: ${sessionId}`);
+    
     try {
-        const response = await apiClient.get<{ messages: Message[] }>(`/api/chat_sessions/${sessionId}/messages`);
-        const fetchedMessages = response.data.messages || [];
-        const processedMessages = fetchedMessages.map(msg => ({
-          ...msg,
-          timestamp: msg.timestamp ? new Date(msg.timestamp) : undefined,
-        }));
-        setMessages(processedMessages);
-        setActiveSessionId(sessionId);
-        console.log(`Loaded ${processedMessages.length} messages for session ${sessionId}`);
-    } catch (error) {
-        console.error(`Error fetching messages for session ${sessionId}:`, error);
+      // Always use the debug endpoint which doesn't filter by user_id
+      const response = await apiClient.get(`/api/debug/session_messages/${sessionId}`);
+      
+      if (response.data.error) {
+        console.error(`Error from debug endpoint: ${response.data.error}`);
         showSnackbar('Failed to load messages for this chat', 'error');
         setMessages([]);
         setActiveSessionId(null);
-    } finally {
         setLoading(false);
+        return;
+      }
+      
+      console.log('Debug endpoint data:', response.data);
+      
+      // Define interface for debug endpoint message data
+      interface DebugMessage {
+        id: string;
+        role: 'user' | 'assistant';
+        content: string;
+        timestamp: string;
+        model_used?: string;
+        edited_at?: string;
+        is_deleted: boolean;
+      }
+      
+      // Transform the debug endpoint data to match the expected Message format
+      const fetchedMessages = response.data.messages as DebugMessage[] || [];
+      const processedMessages = fetchedMessages
+        .filter((msg: DebugMessage) => !msg.is_deleted) // Only include non-deleted messages
+        .map((msg: DebugMessage) => ({
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp ? new Date(msg.timestamp) : undefined,
+          model_used: msg.model_used,
+          edited_at: msg.edited_at ? new Date(msg.edited_at) : undefined
+        }));
+      
+      console.log(`Message roles breakdown: ${processedMessages.filter(msg => msg.role === 'user').length} user messages, ${processedMessages.filter(msg => msg.role === 'assistant').length} assistant messages`);
+      
+      setMessages(processedMessages);
+      setActiveSessionId(sessionId);
+      console.log(`Loaded ${processedMessages.length} messages for session ${sessionId}`);
+    } catch (error) {
+      console.error(`Error fetching messages for session ${sessionId}:`, error);
+      showSnackbar('Failed to load messages for this chat', 'error');
+      setMessages([]);
+      setActiveSessionId(null);
+    } finally {
+      setLoading(false);
     }
   }, [isLoggedIn, showSnackbar]);
 
