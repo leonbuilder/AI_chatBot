@@ -115,6 +115,12 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  const showSnackbar = useCallback((message: string, severity: 'success' | 'error' | 'info' | 'warning') => {
+    setSnackbarMessage(message);
+    setSnackbarSeverity(severity);
+    setSnackbarOpen(true);
+  }, [setSnackbarMessage, setSnackbarSeverity, setSnackbarOpen]);
+
   const fetchCustomModels = useCallback(async () => {
     if (!isLoggedIn) return;
     try {
@@ -126,14 +132,8 @@ function App() {
           showSnackbar('Failed to fetch custom models', 'error');
       }
     }
-  }, [isLoggedIn]);
+  }, [isLoggedIn, showSnackbar]);
   
-  const showSnackbar = (message: string, severity: 'success' | 'error' | 'info' | 'warning') => {
-    setSnackbarMessage(message);
-    setSnackbarSeverity(severity);
-    setSnackbarOpen(true);
-  };
-
   const fetchSessions = useCallback(async () => {
     if (!isLoggedIn) return;
     setSessionsLoading(true);
@@ -478,6 +478,13 @@ function App() {
 
   }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar]);
   
+  // Function to copy message content to clipboard
+  const handleCopyMessageContent = useCallback((content: string) => {
+    navigator.clipboard.writeText(content)
+      .then(() => showSnackbar('Message content copied to clipboard', 'success'))
+      .catch(() => showSnackbar('Failed to copy content', 'error'));
+  }, [showSnackbar]);
+
   const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoginLoading(true);
@@ -848,6 +855,9 @@ function App() {
        <Container maxWidth="lg" sx={{ height: '100vh', display: 'flex', flexDirection: 'column', p: 0, flexGrow: 1 }}>
           <AppHeader 
             isLoggedIn={isLoggedIn}
+            username={null}
+            sessions={sessions}
+            sessionsLoading={sessionsLoading}
             onLogout={handleLogout}
             tabValue={tabValue}
             onTabChange={(_event: React.SyntheticEvent, newValue: number) => setTabValue(newValue)}
@@ -883,9 +893,10 @@ function App() {
           >
             <ChatMessageList 
               messages={messages} 
-              loading={loading && !currentEventSource}
+              isLoading={loading && !currentEventSource}
               messagesEndRef={messagesEndRef}
               onRegenerate={handleRegenerate}
+              onCopy={handleCopyMessageContent}
             />
 
             <Box sx={{ p: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 1 }}>

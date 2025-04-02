@@ -5,6 +5,16 @@ export interface Message {
   timestamp?: Date;
   isStreaming?: boolean;
   error?: string;
+  attachments?: AttachmentInfo[];
+}
+
+// Define AttachmentInfo based on backend structure
+export interface AttachmentInfo {
+    id: string;
+    filename: string;
+    mimetype: string;
+    filesize: number;
+    download_url: string;
 }
 
 export interface CustomModel {
