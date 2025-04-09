@@ -123,11 +123,22 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Save settings to localStorage whenever they change
   useEffect(() => {
-    localStorage.setItem('appSettings', JSON.stringify(settings));
-    
-    // Apply certain settings immediately when they change
-    applySettings(settings);
-  }, [settings]);
+    try {
+      localStorage.setItem('appSettings', JSON.stringify(settings));
+      
+      // Apply certain settings immediately when they change
+      applySettings(settings);
+      
+      // Notify all listeners of the change
+      Object.entries(settings).forEach(([key, value]) => {
+        changeListeners.forEach(listener => 
+          listener(key as keyof AppSettings, value as AppSettings[keyof AppSettings])
+        );
+      });
+    } catch (error) {
+      console.error('Error saving settings:', error);
+    }
+  }, [settings, changeListeners]);
 
   // Add a settings change listener
   const addSettingChangeListener = useCallback((listener: SettingsChangeListener) => {
@@ -141,31 +152,16 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Update a specific setting
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
-    
-    // Also save individual setting to localStorage for backward compatibility
-    if (typeof value === 'object') {
-      localStorage.setItem(key.toString(), JSON.stringify(value));
-    } else {
-      localStorage.setItem(key.toString(), String(value));
-    }
-    
-    // Notify all listeners of the change
-    changeListeners.forEach(listener => listener(key, value));
-  }, [changeListeners]);
+    setSettings(prev => {
+      const newSettings = { ...prev, [key]: value };
+      return newSettings;
+    });
+  }, []);
 
   // Reset all settings to defaults
   const resetSettings = useCallback(() => {
     setSettings(DEFAULT_SETTINGS);
-    localStorage.setItem('appSettings', JSON.stringify(DEFAULT_SETTINGS));
-    
-    // Notify listeners of reset (for each key)
-    Object.entries(DEFAULT_SETTINGS).forEach(([key, value]) => {
-      changeListeners.forEach(listener => 
-        listener(key as keyof AppSettings, value as AppSettings[keyof AppSettings])
-      );
-    });
-  }, [changeListeners]);
+  }, []);
 
   // Helper function to get message density label
   const getMessageDensityLabel = useCallback(() => {

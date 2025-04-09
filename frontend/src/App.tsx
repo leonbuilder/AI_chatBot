@@ -25,7 +25,7 @@ import FileUploadDialog from './components/dialogs/FileUploadDialog';
 import AddWebsiteDialog from './components/dialogs/AddWebsiteDialog';
 import SettingsDialog from './components/dialogs/SettingsDialog';
 import { getTheme } from './theme';
-import { SettingsProvider } from './contexts/SettingsContext';
+import { SettingsProvider, useSettings } from './contexts/SettingsContext';
 
 // --- Axios Instance with Interceptor ---
 const apiClient = axios.create({
@@ -108,10 +108,7 @@ function App() {
   
   // --- Settings Dialog State ---
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
-  const [fontSize, setFontSize] = useState<number>(16);
-  const [darkMode, setDarkMode] = useState<boolean>(false);
-  const [autoSuggest, setAutoSuggest] = useState<boolean>(true);
-  const [promptImprovement, setPromptImprovement] = useState<boolean>(false);
+  const { settings, updateSetting } = useSettings();
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -120,8 +117,8 @@ function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
-  const initialLoadComplete = useRef<boolean>(false); // Ref to track initial load
-  const titleGenerationRequested = useRef<Set<string>>(new Set()); // Track sessions where title generation has been requested
+  const initialLoadComplete = useRef<boolean>(false);
+  const titleGenerationRequested = useRef<Set<string>>(new Set());
   // --- End Session History State ---
 
   const scrollToBottom = () => {
@@ -1005,62 +1002,31 @@ function App() {
 
   // Handle font size change
   const handleFontSizeChange = useCallback((newSize: number) => {
-    setFontSize(newSize);
-    // Save to localStorage
-    localStorage.setItem('fontSize', newSize.toString());
-  }, []);
+    updateSetting('fontSize', newSize);
+  }, [updateSetting]);
 
   // Handle dark mode change
   const handleDarkModeChange = useCallback((enabled: boolean) => {
-    setDarkMode(enabled);
-    // Save to localStorage
-    localStorage.setItem('darkMode', enabled.toString());
-  }, []);
+    updateSetting('darkMode', enabled);
+  }, [updateSetting]);
 
   // Handle auto suggest change
   const handleAutoSuggestChange = useCallback((enabled: boolean) => {
-    setAutoSuggest(enabled);
-    // Save to localStorage
-    localStorage.setItem('autoSuggest', enabled.toString());
-  }, []);
+    updateSetting('autoSuggest', enabled);
+  }, [updateSetting]);
 
   // Handle prompt improvement change
   const handlePromptImprovementChange = useCallback((enabled: boolean) => {
-    setPromptImprovement(enabled);
-    // Save to localStorage
-    localStorage.setItem('promptImprovement', enabled.toString());
-  }, []);
-
-  // Load settings from localStorage on initial load
-  useEffect(() => {
-    const savedFontSize = localStorage.getItem('fontSize');
-    if (savedFontSize) {
-      setFontSize(parseInt(savedFontSize));
-    }
-    
-    const savedDarkMode = localStorage.getItem('darkMode');
-    if (savedDarkMode) {
-      setDarkMode(savedDarkMode === 'true');
-    }
-    
-    const savedAutoSuggest = localStorage.getItem('autoSuggest');
-    if (savedAutoSuggest) {
-      setAutoSuggest(savedAutoSuggest === 'true');
-    }
-    
-    const savedPromptImprovement = localStorage.getItem('promptImprovement');
-    if (savedPromptImprovement) {
-      setPromptImprovement(savedPromptImprovement === 'true');
-    }
-  }, []);
+    updateSetting('promptImprovement', enabled);
+  }, [updateSetting]);
 
   // Update the chat message styling based on font size
   const chatMessageStyle = useMemo(() => ({
-    fontSize: `${fontSize}px`
-  }), [fontSize]);
+    fontSize: `${settings.fontSize}px`
+  }), [settings.fontSize]);
 
   // Create theme based on dark mode setting
-  const theme = useMemo(() => getTheme(darkMode ? 'dark' : 'light'), [darkMode]);
+  const theme = useMemo(() => getTheme(settings.darkMode ? 'dark' : 'light'), [settings.darkMode]);
 
   // Main render logic
   const appContent = isLoggedIn ? (
@@ -1124,7 +1090,7 @@ function App() {
             onRegenerate={handleRegenerate}
             onCopy={handleCopyMessageContent}
             onEditMessage={handleEditMessage}
-            fontSize={fontSize}
+            fontSize={settings.fontSize}
           />
 
           <Box sx={{ 
@@ -1137,8 +1103,8 @@ function App() {
             <ChatInput 
               onSend={handleSend} 
               loading={!!currentEventSource}
-              showSuggestions={autoSuggest}
-              enablePromptImprovement={promptImprovement}
+              showSuggestions={settings.autoSuggest}
+              enablePromptImprovement={settings.promptImprovement}
             /> 
             {currentEventSource && (
               <Button
@@ -1391,10 +1357,8 @@ function App() {
   // Final return with ThemeProvider wrapper
   return (
     <ThemeProvider theme={theme}>
-      <SettingsProvider>
-        <CssBaseline />
-        {appContent}
-      </SettingsProvider>
+      <CssBaseline />
+      {appContent}
     </ThemeProvider>
   );
 }

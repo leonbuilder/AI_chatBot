@@ -264,8 +264,6 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   const [improvingPrompt, setImprovingPrompt] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTabs>(SettingsTabs.Chat);
   const [purposeTabValue, setPurposeTabValue] = useState(0);
-  
-  // Add state for using new purpose selector
   const [useHierarchicalSelector, setUseHierarchicalSelector] = useState(true);
 
   useEffect(() => {
@@ -279,11 +277,9 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
     setLocalPurpose(event.target.value);
   };
   
-  // Handle hierarchical purpose selection
   const handleHierarchicalPurposeChange = (purpose: string, generatedSystemPrompt?: string) => {
     setLocalPurpose(purpose);
     
-    // If a system prompt was provided and the field is empty or the user confirms
     if (generatedSystemPrompt && 
         (localSystemPrompt === '' || 
          window.confirm('Replace current system prompt with the purpose-specific one?'))) {
