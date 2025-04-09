@@ -65,31 +65,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
 }) => {
     const theme = useTheme();
     const selectedModel = customModels.find(m => m.id === selectedModelId);
-    const [isEditingPrompt, setIsEditingPrompt] = useState<boolean>(false);
-    const [editedPrompt, setEditedPrompt] = useState<string>('');
-
-    useEffect(() => {
-        setEditedPrompt(activeSessionSystemPrompt || '');
-        if (!activeSessionId) {
-            setIsEditingPrompt(false);
-        }
-    }, [activeSessionSystemPrompt, activeSessionId]);
-
-    const handleStartEditPrompt = () => {
-        setIsEditingPrompt(true);
-    };
-
-    const handleCancelEditPrompt = () => {
-        setIsEditingPrompt(false);
-        setEditedPrompt(activeSessionSystemPrompt || '');
-    };
-
-    const handleSavePrompt = () => {
-        if (activeSessionId) {
-            onUpdateSystemPrompt(activeSessionId, editedPrompt);
-            setIsEditingPrompt(false);
-        }
-    };
 
     return (
         <AppBar position="static" color="default" elevation={0}>
@@ -178,80 +153,6 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                 </Tabs>
 
                 <Box sx={{ py: 1.5 }}>
-                    {/* System Prompt */}
-                    {activeSessionId && (
-                        <Box sx={{ 
-                            mb: 1.5, 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            border: `1px solid ${theme.palette.divider}`,
-                            borderRadius: theme.shape.borderRadius,
-                            padding: 1.5,
-                        }}>
-                            {isEditingPrompt ? (
-                                <TextField
-                                    variant="outlined"
-                                    size="small"
-                                    fullWidth
-                                    multiline
-                                    rows={2}
-                                    value={editedPrompt}
-                                    onChange={(e) => setEditedPrompt(e.target.value)}
-                                    autoFocus
-                                    placeholder="System prompt (instructions for the AI)"
-                                    sx={{
-                                        fontSize: '0.85rem',
-                                    }}
-                                />
-                            ) : (
-                                <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
-                                    <Settings 
-                                        fontSize="small" 
-                                        sx={{ mr: 1.5, color: theme.palette.text.secondary, opacity: 0.7 }} 
-                                    />
-                                    <Typography 
-                                        variant="body2" 
-                                        sx={{ 
-                                            color: activeSessionSystemPrompt ? theme.palette.text.primary : theme.palette.text.secondary, 
-                                            fontStyle: activeSessionSystemPrompt ? 'normal' : 'italic',
-                                            fontSize: '0.85rem',
-                                            flexGrow: 1,
-                                        }}
-                                    >
-                                        {activeSessionSystemPrompt ? activeSessionSystemPrompt : "No custom context set"}
-                                    </Typography>
-                                </Box>
-                            )}
-                            
-                            {isEditingPrompt ? (
-                                <Box sx={{ display: 'flex', alignItems: 'center', ml: 1, gap: 0.5 }}>
-                                    <IconButton 
-                                        onClick={handleSavePrompt} 
-                                        size="small"
-                                        sx={{ color: theme.palette.primary.main }}
-                                    >
-                                        <Save fontSize="small" />
-                                    </IconButton>
-                                    <IconButton 
-                                        onClick={handleCancelEditPrompt} 
-                                        size="small"
-                                        sx={{ color: theme.palette.error.main }}
-                                    >
-                                        <Cancel fontSize="small" />
-                                    </IconButton>
-                                </Box>
-                            ) : (
-                                <IconButton 
-                                    onClick={handleStartEditPrompt} 
-                                    size="small"
-                                    sx={{ color: theme.palette.text.secondary }}
-                                >
-                                    <Edit fontSize="small" />
-                                </IconButton>
-                            )}
-                        </Box>
-                    )}
-                    
                     {/* Tab Content */}
                     {tabValue === 0 ? (
                         <Box sx={{ height: 56, display: 'flex', alignItems: 'center' }}>
