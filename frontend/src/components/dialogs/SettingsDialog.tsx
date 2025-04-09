@@ -470,10 +470,10 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 fullWidth
                 variant="outlined"
                 placeholder="Enter custom instructions for the AI..."
-                disabled={!activeSessionId || improvingPrompt}
-                helperText={!activeSessionId ? "Start a conversation first to set custom context" : ""}
+                disabled={improvingPrompt}
+                helperText={!activeSessionId ? "This system prompt will be used for new chats" : ""}
               />
-              {activeSessionId && localSystemPrompt.trim() && (
+              {localSystemPrompt.trim() && (
                 <Box sx={{ position: 'absolute', top: 0, right: 0, mt: 1, mr: 1 }}>
                   <IconButton 
                     onClick={handleImproveSystemPrompt}

@@ -121,6 +121,9 @@ function App() {
   const titleGenerationRequested = useRef<Set<string>>(new Set());
   // --- End Session History State ---
 
+  // Add state for default system prompt
+  const [defaultSystemPrompt, setDefaultSystemPrompt] = useState<string>('');
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -129,7 +132,7 @@ function App() {
     setSnackbarMessage(message);
     setSnackbarSeverity(severity);
     setSnackbarOpen(true);
-  }, [setSnackbarMessage, setSnackbarSeverity, setSnackbarOpen]);
+  }, []);
 
   const fetchCustomModels = useCallback(async () => {
     if (!isLoggedIn) return;
@@ -399,7 +402,7 @@ function App() {
     // Use a temporary ID for display purposes only
     const tempUserMessageId = `temp-user-${Date.now()}`;
     const userMessage: Message = {
-      id: tempUserMessageId, // This will be replaced with the real ID from the server
+      id: tempUserMessageId,
       role: 'user',
       content: messageContent,
       timestamp: new Date(),
@@ -407,7 +410,7 @@ function App() {
 
     const streamingAssistantMessageId = `temp-assistant-${Date.now()}`;
     const assistantMessagePlaceholder: Message = {
-      id: streamingAssistantMessageId, // This will be replaced with the real ID from the server
+      id: streamingAssistantMessageId,
       role: 'assistant',
       content: '',
       timestamp: new Date(),
@@ -432,7 +435,8 @@ function App() {
         history: JSON.stringify(historyForBackend),
         purpose: purpose,
         ...(selectedModelId && { model_id: selectedModelId }),
-        ...(activeSessionId && { session_id: activeSessionId })
+        ...(activeSessionId && { session_id: activeSessionId }),
+        ...(defaultSystemPrompt && !activeSessionId && { system_prompt: defaultSystemPrompt })
     });
 
     const eventSourceUrl = `${API_BASE_URL}/api/chat_stream?${queryParams.toString()}`;
@@ -517,7 +521,7 @@ function App() {
         es.close(); // Close on error
         setCurrentEventSource(null);
     };
-  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, fetchSessions, showSnackbar, generateSessionTitle, fetchMessagesForSession]);
+  }, [messages, purpose, selectedModelId, isLoggedIn, currentEventSource, activeSessionId, defaultSystemPrompt, showSnackbar, generateSessionTitle, fetchMessagesForSession, fetchSessions]);
   
   const handleRegenerate = useCallback((messageIdToRegenerate: string, isAfterEdit = false) => {
     if (!isLoggedIn || !activeSessionId) {
@@ -997,6 +1001,8 @@ function App() {
   const handleSystemPromptChangeFromSettings = useCallback((prompt: string) => {
     if (activeSessionId) {
       handleUpdateSystemPrompt(activeSessionId, prompt);
+    } else {
+      setDefaultSystemPrompt(prompt);
     }
   }, [activeSessionId, handleUpdateSystemPrompt]);
 
