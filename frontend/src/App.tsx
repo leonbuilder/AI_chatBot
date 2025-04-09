@@ -116,13 +116,17 @@ function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const initialLoadComplete = useRef<boolean>(false);
   const titleGenerationRequested = useRef<Set<string>>(new Set());
   // --- End Session History State ---
 
   // Add state for default system prompt
   const [defaultSystemPrompt, setDefaultSystemPrompt] = useState<string>('');
+
+  // Add state for input and current purpose
+  const [input, setInput] = useState('');
+  const [currentPurpose, setCurrentPurpose] = useState('');
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -252,10 +256,12 @@ function App() {
   const handleNewSession = useCallback(() => {
     console.log("Creating new session");
     currentEventSource?.close();
-    setCurrentEventSource(null);
-    
-    setActiveSessionId(null);
+    setLoading(true);
     setMessages([]);
+    setInput('');
+    setActiveSessionId(null);
+    setCurrentPurpose('');
+    setSelectedModelId(null);
     setLoading(false);
     setSidebarOpen(false);
   }, [currentEventSource]);
@@ -436,7 +442,7 @@ function App() {
         purpose: purpose,
         ...(selectedModelId && { model_id: selectedModelId }),
         ...(activeSessionId && { session_id: activeSessionId }),
-        ...(defaultSystemPrompt && !activeSessionId && { system_prompt: defaultSystemPrompt })
+        ...(defaultSystemPrompt && { system_prompt: defaultSystemPrompt })
     });
 
     const eventSourceUrl = `${API_BASE_URL}/api/chat_stream?${queryParams.toString()}`;
@@ -1000,10 +1006,12 @@ function App() {
   // Adapter function for system prompt changes from settings dialog
   const handleSystemPromptChangeFromSettings = useCallback((prompt: string) => {
     if (activeSessionId) {
+      // If there's an active session, update it
       handleUpdateSystemPrompt(activeSessionId, prompt);
-    } else {
-      setDefaultSystemPrompt(prompt);
     }
+    // Always save as default system prompt for future sessions
+    setDefaultSystemPrompt(prompt);
+    console.log("Saved default system prompt:", prompt);
   }, [activeSessionId, handleUpdateSystemPrompt]);
 
   // Handle font size change

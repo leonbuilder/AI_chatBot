@@ -300,7 +300,7 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
   };
 
   const handleImproveSystemPrompt = async () => {
-    if (!localSystemPrompt.trim() || !activeSessionId) return;
+    if (!localSystemPrompt.trim()) return;
     
     setImprovingPrompt(true);
     try {
@@ -330,7 +330,8 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({
       onPurposeChange(localPurpose);
     }
     
-    if (activeSessionId && localSystemPrompt !== systemPrompt) {
+    // Always save system prompt changes, regardless of active session
+    if (localSystemPrompt !== systemPrompt) {
       onSystemPromptChange(localSystemPrompt);
     }
     
